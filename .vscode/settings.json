@@ -1,0 +1,12 @@
+{
+	"luau-lsp.platform.type": "roblox",
+	"luau-lsp.sourcemap.enabled": false,
+	"luau-lsp.types.roblox": true,
+	"luau-lsp.require.mode": "relativeToFile",
+	"luau-lsp.ignoreGlobs": ["tests/**", "examples/lune/**"],
+	"stylua.targetReleaseVersion": "latest",
+	"[luau]": {
+		"editor.defaultFormatter": "JohnnyMorganz.stylua",
+		"editor.formatOnSave": true
+	}
+}
