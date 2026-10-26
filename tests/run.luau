@@ -252,50 +252,76 @@ local function lastRequest()
 	return log[#log]
 end
 
-local anthropic =
-	AI.new({ provider = "anthropic", apiKey = "sk-ant-test", baseUrl = BASE, defaultModel = "claude-test" })
-local openai = AI.new({ provider = "openai", apiKey = "sk-test", baseUrl = BASE, defaultModel = "gpt-test" })
+local anthropic = AI.Provider.new({
+	Format = AI.Format.Anthropic.V2023_06_01,
+	ApiKey = "sk-ant-test",
+	BaseUrl = BASE,
+	DefaultModel = "claude-test",
+})
+local openai = AI.Provider.new({
+	Format = AI.Format.OpenAI.Responses,
+	ApiKey = "sk-test",
+	BaseUrl = BASE,
+	DefaultModel = "gpt-test",
+})
+
+test("formats", function()
+	equal(AI.Format.Anthropic.V2023_06_01, AI.Format.Anthropic["2023-06-01"], "dated alias")
+	equal(AI.Format.Anthropic.Latest, AI.Format.Anthropic.V2023_06_01, "latest")
+	equal(AI.Format.Anthropic.V2023_06_01.Version, "2023-06-01")
+	equal(AI.Format.OpenAI.Responses.Protocol, "openai")
+	equal(anthropic.Format, AI.Format.Anthropic.V2023_06_01)
+	equal(openai.BaseUrl, BASE)
+	expect(table.isfrozen(AI.Format.Anthropic.V2023_06_01), "formats are frozen")
+end)
 
 test("json encoding marks empty objects and escapes strings", function()
-	equal(AI.encodeJson({}), "[]")
-	equal(AI.encodeJson(AI.object({})), "{}")
-	equal(AI.encodeJson({ b = 1, a = { 1, 2.5, true } }), '{"a":[1,2.5,true],"b":1}')
-	equal(AI.encodeJson('quote " slash \\ line\n tab\t \1'), '"quote \\" slash \\\\ line\\n tab\\t \\u0001"')
-	equal(AI.encodeJson({ x = AI.null }), '{"x":null}')
-	local ok, err = pcall(AI.encodeJson, 0 / 0)
-	expect(not ok and AI.isError(err) and err.kind == "config", "NaN should not encode")
+	equal(AI.EncodeJson({}), "[]")
+	equal(AI.EncodeJson(AI.Object({})), "{}")
+	equal(AI.EncodeJson({ b = 1, a = { 1, 2.5, true } }), '{"a":[1,2.5,true],"b":1}')
+	equal(AI.EncodeJson('quote " slash \\ line\n tab\t \1'), '"quote \\" slash \\\\ line\\n tab\\t \\u0001"')
+	equal(AI.EncodeJson({ x = AI.Null }), '{"x":null}')
+	local ok, err = pcall(AI.EncodeJson, 0 / 0)
+	expect(not ok and AI.IsError(err) and err.Kind == "config", "NaN should not encode")
 end)
 
 test("config errors", function()
-	local ok, err = pcall(AI.new, { provider = "nope" :: any, apiKey = "x" })
-	expect(not ok and AI.isError(err) and err.kind == "config")
-	ok, err = pcall(AI.new, { provider = "openai", secret = "AI_LUAU_DEFINITELY_MISSING" })
-	expect(not ok and err.kind == "config" and string.find(err.message, "AI_LUAU_DEFINITELY_MISSING", 1, true))
+	local ok, err = pcall(AI.Provider.new, { Format = nil :: any, ApiKey = "x" })
+	expect(not ok and AI.IsError(err) and err.Kind == "config", "missing format")
+	ok, err = pcall(AI.Provider.new, { Format = { Name = "fake", Protocol = "openai" } :: any, ApiKey = "x" })
+	expect(not ok and err.Kind == "config", "unknown format tables are rejected")
+	ok, err = pcall(AI.Provider.new, { Format = AI.Format.OpenAI.Responses, Secret = "AI_LUAU_DEFINITELY_MISSING" })
+	expect(not ok and err.Kind == "config" and string.find(err.Message, "AI_LUAU_DEFINITELY_MISSING", 1, true))
 	ok, err = pcall(function()
-		return anthropic:create({ model = "claude-test" })
+		return anthropic:Create({ Model = "claude-test" })
 	end)
-	expect(not ok and err.kind == "config", "missing prompt should be a config error")
+	expect(not ok and err.Kind == "config", "missing prompt should be a config error")
 end)
 
 test("secret falls back to environment variables on Lune", function()
 	process.env.AI_LUAU_TEST_KEY = "sk-from-env"
-	local client =
-		AI.new({ provider = "openai", secret = "AI_LUAU_TEST_KEY", baseUrl = BASE, defaultModel = "gpt-test" })
-	client:create({ prompt = "ping" })
+	local provider = AI.Provider.new({
+		Format = AI.Format.OpenAI.Responses,
+		Secret = "AI_LUAU_TEST_KEY",
+		BaseUrl = BASE,
+		DefaultModel = "gpt-test",
+	})
+	provider:Create({ Prompt = "ping" })
 	equal(lastRequest().headers["authorization"], "Bearer sk-from-env", "authorization")
 end)
 
 test("anthropic create", function()
-	local response = anthropic:create({
-		system = "Be brief.",
-		messages = { AI.system("And kind."), AI.user("Hello") },
-		temperature = 0.2,
-		stop = { "STOP" },
+	local response = anthropic:Create({
+		System = "Be brief.",
+		Messages = { AI.System("And kind."), AI.User("Hello") },
+		Temperature = 0.2,
+		Stop = { "STOP" },
 	})
-	equal(response.text, "Hi there")
-	equal(response.stopReason, "stop")
-	equal(response.usage.totalTokens, 6)
-	equal(response.usage.cacheReadTokens, 1)
+	equal(response.Text, "Hi there")
+	equal(response.StopReason, "stop")
+	equal(response.Format, AI.Format.Anthropic.V2023_06_01)
+	equal(response.Usage.TotalTokens, 6)
+	equal(response.Usage.CacheReadTokens, 1)
 	local request = lastRequest()
 	equal(request.headers["x-api-key"], "sk-ant-test")
 	equal(request.headers["anthropic-version"], "2023-06-01")
@@ -307,28 +333,28 @@ end)
 
 test("anthropic stream", function()
 	local seen: { string } = {}
-	local stream = anthropic:stream({ prompt = "Hello" }, function(event)
-		table.insert(seen, event.type)
+	local stream = anthropic:Stream({ Prompt = "Hello" }, function(event)
+		table.insert(seen, event.Type)
 	end)
 	local deltas = {}
 	local toolDeltas = {}
-	for event in stream:iter() do
-		if event.type == "text" then
-			table.insert(deltas, event.delta)
-		elseif event.type == "tool_call_delta" then
-			table.insert(toolDeltas, event.delta)
-		elseif event.type == "tool_call" then
-			equal(event.call.arguments.b, 10, "streamed tool arguments")
+	for event in stream:Iter() do
+		if event.Type == "text" then
+			table.insert(deltas, event.Delta)
+		elseif event.Type == "tool_call_delta" then
+			table.insert(toolDeltas, event.Delta)
+		elseif event.Type == "tool_call" then
+			equal(event.Call.Arguments.b, 10, "streamed tool arguments")
 		end
 	end
 	equal(table.concat(deltas, "|"), "Hello| world")
 	equal(table.concat(toolDeltas), '{"a":2,"b":10}')
-	local response = stream:await()
-	equal(response.text, "Hello world")
-	equal(response.stopReason, "tool_calls")
-	equal(response.usage.outputTokens, 20)
-	equal(response.toolCalls[1].id, "toolu_1")
-	equal(stream.text, "Hello world")
+	local response = stream:Await()
+	equal(response.Text, "Hello world")
+	equal(response.StopReason, "tool_calls")
+	equal(response.Usage.OutputTokens, 20)
+	equal(response.ToolCalls[1].Id, "toolu_1")
+	equal(stream.Text, "Hello world")
 	equal(seen[1], "start")
 	equal(seen[#seen], "done")
 	equal(lastRequest().body.stream, true)
@@ -336,35 +362,35 @@ end)
 
 test("anthropic tool loop round-trips thinking and tool results", function()
 	local steps = 0
-	local result = anthropic:run({
-		prompt = "What is 2 ^ 10?",
-		tools = {
+	local result = anthropic:Run({
+		Prompt = "What is 2 ^ 10?",
+		Tools = {
 			{
-				name = "pow",
-				description = "Raise a to b",
-				parameters = {
+				Name = "pow",
+				Description = "Raise a to b",
+				Parameters = {
 					type = "object",
 					properties = { a = { type = "number" }, b = { type = "number" } },
 					required = { "a", "b" },
 				},
 			},
-			{ name = "noop" },
+			{ Name = "noop" },
 		},
-		toolChoice = "auto",
-		reasoning = { budgetTokens = 1024 },
+		ToolChoice = "auto",
+		Reasoning = { BudgetTokens = 1024 },
 	}, {
 		pow = function(args)
 			return args.a ^ args.b
 		end,
 	}, {
-		onStep = function()
+		OnStep = function()
 			steps += 1
 		end,
 	})
-	equal(result.response.text, "result 1024")
-	equal(result.steps, 2)
+	equal(result.Response.Text, "result 1024")
+	equal(result.Steps, 2)
 	equal(steps, 2)
-	equal(#result.messages, 4)
+	equal(#result.Messages, 4)
 	local request = lastRequest()
 	local assistant = request.body.messages[2]
 	equal(assistant.content[1].type, "thinking", "thinking block replayed")
@@ -379,53 +405,53 @@ end)
 test("retries rate limits", function()
 	failNext = 2
 	local before = #log
-	local response = openai:create({ prompt = "ping" })
-	equal(response.text, "pong")
+	local response = openai:Create({ Prompt = "ping" })
+	equal(response.Text, "pong")
 	equal(#log - before, 3, "two retries then success")
 end)
 
 test("http errors carry provider details", function()
 	local ok, err = pcall(function()
-		return openai:create({ model = "missing", prompt = "ping" })
+		return openai:Create({ Model = "missing", Prompt = "ping" })
 	end)
-	expect(not ok and AI.isError(err))
-	equal(err.kind, "http")
-	equal(err.status, 404)
-	equal(err.code, "model_not_found")
-	equal(err.message, "model not found")
-	equal(err.retryable, false)
+	expect(not ok and AI.IsError(err))
+	equal(err.Kind, "http")
+	equal(err.Status, 404)
+	equal(err.Code, "model_not_found")
+	equal(err.Message, "model not found")
+	equal(err.Retryable, false)
 	expect(string.find(tostring(err), "http 404", 1, true), "tostring includes the status")
 end)
 
 test("openai create maps messages, tools and images", function()
-	local response = openai:create({
-		system = "sys",
-		messages = {
-			AI.user({ { type = "text", text = "look" }, AI.image("https://example.com/cat.png") }),
+	local response = openai:Create({
+		System = "sys",
+		Messages = {
+			AI.User({ { Type = "text", Text = "look" }, AI.Image("https://example.com/cat.png") }),
 			{
-				role = "assistant",
-				content = {
-					{ type = "text", text = "calling" },
+				Role = "assistant",
+				Content = {
+					{ Type = "text", Text = "calling" },
 					{
-						type = "tool_call",
-						id = "call_1",
-						name = "lookup",
-						arguments = {},
-						rawArguments = "",
-						itemId = "fc_1",
+						Type = "tool_call",
+						Id = "call_1",
+						Name = "lookup",
+						Arguments = {},
+						RawArguments = "",
+						ItemId = "fc_1",
 					},
 				},
 			},
-			AI.user({ AI.toolResult("call_1", "42") }),
+			AI.User({ AI.ToolResult("call_1", "42") }),
 		},
-		tools = { { name = "lookup", parameters = { type = "object", properties = {} } } },
-		toolChoice = { name = "lookup" },
-		reasoning = { effort = "low" },
-		maxTokens = 50,
-		store = false,
-		extra = { metadata = { source = "test" } },
+		Tools = { { Name = "lookup", Parameters = { type = "object", properties = {} } } },
+		ToolChoice = { Name = "lookup" },
+		Reasoning = { Effort = "low" },
+		MaxTokens = 50,
+		Store = false,
+		Extra = { metadata = { source = "test" } },
 	})
-	equal(response.text, "pong")
+	equal(response.Text, "pong")
 	local body = lastRequest().body
 	equal(body.instructions, "sys")
 	equal(body.input[1].content[2].type, "input_image")
@@ -442,147 +468,147 @@ test("openai create maps messages, tools and images", function()
 	equal(body.store, false)
 	equal(body.metadata.source, "test")
 	local ok, err = pcall(function()
-		return openai:create({ prompt = "x", stop = { "y" } })
+		return openai:Create({ Prompt = "x", Stop = { "y" } })
 	end)
-	expect(not ok and err.kind == "config", "stop sequences are rejected")
+	expect(not ok and err.Kind == "config", "stop sequences are rejected")
 end)
 
 test("openai stream over sse", function()
-	local client = AI.new({
-		provider = "openai",
-		apiKey = "sk-test",
-		baseUrl = BASE,
-		defaultModel = "gpt-test",
-		transport = "sse",
+	local provider = AI.Provider.new({
+		Format = AI.Format.OpenAI.Responses,
+		ApiKey = "sk-test",
+		BaseUrl = BASE,
+		DefaultModel = "gpt-test",
+		Transport = "sse",
 	})
-	local stream = client:stream({ prompt = "hi" })
-	local response = stream:await()
-	equal(response.text, "abc")
-	equal(response.id, "resp_sse")
-	equal(stream.text, "abc")
+	local stream = provider:Stream({ Prompt = "hi" })
+	local response = stream:Await()
+	equal(response.Text, "abc")
+	equal(response.Id, "resp_sse")
+	equal(stream.Text, "abc")
 end)
 
 test("openai stream over websocket", function()
 	local text = {}
-	local stream = openai:stream({ prompt = "hi" }, function(event)
-		if event.type == "text" then
-			table.insert(text, event.delta)
+	local stream = openai:Stream({ Prompt = "hi" }, function(event)
+		if event.Type == "text" then
+			table.insert(text, event.Delta)
 		end
 	end)
-	local response = stream:await()
-	equal(response.text, "socket")
+	local response = stream:Await()
+	equal(response.Text, "socket")
 	equal(table.concat(text), "socket")
 end)
 
 test("websocket session continues and multiplexes lanes", function()
-	local session = openai:connect()
-	expect(session:isOpen())
-	local first = session:create({ prompt = "one", store = false })
-	local second = session:create({ prompt = "two", previousResponseId = first.id, store = false })
-	equal(second.text, `continued {first.id}`)
+	local session = openai:Connect()
+	expect(session:IsOpen())
+	local first = session:Create({ Prompt = "one", Store = false })
+	local second = session:Create({ Prompt = "two", PreviousResponseId = first.Id, Store = false })
+	equal(second.Text, `continued {first.Id}`)
 
-	local a = session:stream({ prompt = "a", streamId = "lane-a" })
-	local b = session:stream({ prompt = "b", streamId = "lane-b" })
-	equal(b:await().text, "lane-b")
-	equal(a:await().text, "lane-a")
+	local a = session:Stream({ Prompt = "a", StreamId = "lane-a" })
+	local b = session:Stream({ Prompt = "b", StreamId = "lane-b" })
+	equal(b:Await().Text, "lane-b")
+	equal(a:Await().Text, "lane-a")
 
 	local ok, err = pcall(function()
-		return session:create({ model = "fail", prompt = "x" })
+		return session:Create({ Model = "fail", Prompt = "x" })
 	end)
-	expect(not ok and err.kind == "api" and err.code == "previous_response_not_found", "lane errors")
-	equal(session:create({ prompt = "still open" }).text, "socket")
+	expect(not ok and err.Kind == "api" and err.Code == "previous_response_not_found", "lane errors")
+	equal(session:Create({ Prompt = "still open" }).Text, "socket")
 
-	session:close()
-	expect(not session:isOpen())
-	local closed = session:stream({ prompt = "x" })
-	local okClosed, closedErr = pcall(closed.await, closed)
-	expect(not okClosed and closedErr.kind == "closed")
+	session:Close()
+	expect(not session:IsOpen())
+	local closed = session:Stream({ Prompt = "x" })
+	local okClosed, closedErr = pcall(closed.Await, closed)
+	expect(not okClosed and closedErr.Kind == "closed")
 end)
 
 test("websocket frames larger than 64 KiB", function()
-	local response = openai:create({ prompt = "hi" })
-	equal(response.text, "pong")
-	local streamed = openai:stream({ prompt = string.rep("x", 100000) }):await()
-	equal(#streamed.text, 70007)
-	equal(string.sub(streamed.text, 1, 7), "100000:")
+	local response = openai:Create({ Prompt = "hi" })
+	equal(response.Text, "pong")
+	local streamed = openai:Stream({ Prompt = string.rep("x", 100000) }):Await()
+	equal(#streamed.Text, 70007)
+	equal(string.sub(streamed.Text, 1, 7), "100000:")
 end)
 
 test("stream cancel", function()
-	local stream = anthropic:stream({ prompt = "Hello" })
-	stream:cancel()
-	local ok, err = pcall(stream.await, stream)
-	expect(not ok and err.kind == "cancelled")
-	equal(stream:next(), nil)
+	local stream = anthropic:Stream({ Prompt = "Hello" })
+	stream:Cancel()
+	local ok, err = pcall(stream.Await, stream)
+	expect(not ok and err.Kind == "cancelled")
+	equal(stream:Next(), nil)
 end)
 
-test("anthropic clients reject sessions and moderation", function()
-	local ok, err = pcall(anthropic.connect, anthropic)
-	expect(not ok and err.kind == "unsupported")
-	ok, err = pcall(anthropic.moderate, anthropic, "x")
-	expect(not ok and err.kind == "unsupported")
+test("anthropic providers reject sessions and moderation", function()
+	local ok, err = pcall(anthropic.Connect, anthropic)
+	expect(not ok and err.Kind == "unsupported")
+	ok, err = pcall(anthropic.Moderate, anthropic, "x")
+	expect(not ok and err.Kind == "unsupported")
 end)
 
 test("moderation and content checks", function()
-	local moderation = openai:moderate({ "fine", "BAD words" })
-	equal(#moderation.results, 2)
-	expect(moderation.flagged)
-	equal(moderation.results[2].scores.harassment, 0.9)
+	local moderation = openai:Moderate({ "fine", "BAD words" })
+	equal(#moderation.Results, 2)
+	expect(moderation.Flagged)
+	equal(moderation.Results[2].Scores.harassment, 0.9)
 	equal(lastRequest().body.model, "omni-moderation-latest")
 
-	local check = openai:check("BAD words")
-	expect(not check.allowed)
-	equal(check.violations[1].category, "harassment")
+	local check = openai:Check("BAD words")
+	expect(not check.Allowed)
+	equal(check.Violations[1].Category, "harassment")
 
-	equal(openai:check("BAD words", { allow = { "harassment" } }).allowed, true)
-	local strict = openai:check("fine", { defaultThreshold = 0.25 })
-	equal(strict.allowed, false)
-	equal(strict.violations[1].category, "violence")
-	equal(openai:check("fine", { thresholds = { violence = 0.5 }, block = { "violence" } }).allowed, true)
+	equal(openai:Check("BAD words", { Allow = { "harassment" } }).Allowed, true)
+	local strict = openai:Check("fine", { DefaultThreshold = 0.25 })
+	equal(strict.Allowed, false)
+	equal(strict.Violations[1].Category, "violence")
+	equal(openai:Check("fine", { Thresholds = { violence = 0.5 }, Block = { "violence" } }).Allowed, true)
 
-	openai:moderate({ { type = "text", text = "hi" }, AI.imageData("AAAA", "image/jpeg") })
+	openai:Moderate({ { Type = "text", Text = "hi" }, AI.ImageData("AAAA", "image/jpeg") })
 	local input = lastRequest().body.input
 	equal(input[2].image_url.url, "data:image/jpeg;base64,AAAA")
 
-	local reevaluated = AI.evaluate(moderation, { block = { "violence" } })
-	equal(reevaluated.allowed, true)
+	local reevaluated = AI.Evaluate(moderation, { Block = { "violence" } })
+	equal(reevaluated.Allowed, true)
 end)
 
 test("moderation guard blocks input and output", function()
-	local guarded = AI.new({
-		provider = "anthropic",
-		apiKey = "sk-ant-test",
-		baseUrl = BASE,
-		defaultModel = "claude-test",
-		moderation = { client = openai },
+	local guarded = AI.Provider.new({
+		Format = AI.Format.Anthropic["2023-06-01"],
+		ApiKey = "sk-ant-test",
+		BaseUrl = BASE,
+		DefaultModel = "claude-test",
+		Moderation = { Provider = openai },
 	})
-	equal(guarded:create({ prompt = "hello" }).text, "Hi there")
+	equal(guarded:Create({ Prompt = "hello" }).Text, "Hi there")
 	local ok, err = pcall(function()
-		return guarded:create({ prompt = "BAD input" })
+		return guarded:Create({ Prompt = "BAD input" })
 	end)
-	expect(not ok and err.kind == "moderation" and err.check and not err.check.allowed)
+	expect(not ok and err.Kind == "moderation" and err.Check and not err.Check.Allowed)
 
 	local before = #log
 	local okStream, streamErr = pcall(function()
-		return guarded:stream({ prompt = "BAD input" })
+		return guarded:Stream({ Prompt = "BAD input" })
 	end)
-	expect(not okStream and streamErr.kind == "moderation")
+	expect(not okStream and streamErr.Kind == "moderation")
 	equal(log[before + 1].path, "/v1/moderations", "blocked before the model was called")
 	equal(#log, before + 1)
 
-	local outputGuarded = AI.new({
-		provider = "openai",
-		apiKey = "sk-test",
-		baseUrl = BASE,
-		defaultModel = "gpt-test",
-		moderation = { input = false, policy = { defaultThreshold = 0.2 } },
+	local outputGuarded = AI.Provider.new({
+		Format = AI.Format.OpenAI.Responses,
+		ApiKey = "sk-test",
+		BaseUrl = BASE,
+		DefaultModel = "gpt-test",
+		Moderation = { Input = false, Policy = { DefaultThreshold = 0.2 } },
 	})
 	local okOutput, outputErr = pcall(function()
-		return outputGuarded:create({ prompt = "anything" })
+		return outputGuarded:Create({ Prompt = "anything" })
 	end)
-	expect(not okOutput and outputErr.kind == "moderation" and string.find(outputErr.message, "output", 1, true))
-	local streamed = outputGuarded:stream({ prompt = "anything" })
-	local okAwait, awaitErr = pcall(streamed.await, streamed)
-	expect(not okAwait and awaitErr.kind == "moderation")
+	expect(not okOutput and outputErr.Kind == "moderation" and string.find(outputErr.Message, "output", 1, true))
+	local streamed = outputGuarded:Stream({ Prompt = "anything" })
+	local okAwait, awaitErr = pcall(streamed.Await, streamed)
+	expect(not okAwait and awaitErr.Kind == "moderation")
 end)
 
 local passed, failed = 0, 0

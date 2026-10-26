@@ -3,17 +3,17 @@ local stdio = require("@lune/stdio")
 
 local AI = require("../../AI")
 
-local openai = AI.new({ provider = "openai", defaultModel = "gpt-5.2" })
+local openai = AI.Provider.new({ Format = AI.Format.OpenAI.Responses, DefaultModel = "gpt-5.2" })
 
-local stream = openai:stream({ prompt = "Explain WebSockets in three sentences." })
-for event in stream:iter() do
-	if event.type == "text" then
-		stdio.write(event.delta)
-	elseif event.type == "error" then
-		stdio.ewrite(`\n{event.error}\n`)
+local stream = openai:Stream({ Prompt = "Explain WebSockets in three sentences." })
+for event in stream:Iter() do
+	if event.Type == "text" then
+		stdio.write(event.Delta)
+	elseif event.Type == "error" then
+		stdio.ewrite(`\n{event.Error}\n`)
 	end
 end
 print()
 
-local response = stream:await()
-print(`[{response.usage.inputTokens} in, {response.usage.outputTokens} out]`)
+local response = stream:Await()
+print(`[{response.Usage.InputTokens} in, {response.Usage.OutputTokens} out]`)

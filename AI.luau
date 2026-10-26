@@ -5,64 +5,77 @@
 	A single-file, strictly typed client for large language model APIs that runs on both
 	[Roblox](https://create.roblox.com) and [Lune](https://lune-org.github.io/docs).
 
-	Supported APIs:
+	Providers are created with [Provider.new] and a [Format], which picks the wire protocol and API version:
 
-	- **Anthropic** Messages API (`POST /v1/messages`), streamed over server-sent events.
-	- **OpenAI** and OpenAI-compatible endpoints through the Responses API (`POST /v1/responses`),
-	  streamed over [WebSocket mode](https://developers.openai.com/api/docs/guides/websocket-mode)
-	  or server-sent events.
-	- **OpenAI moderation** (`POST /v1/moderations`) and policy-based content checks, which can also
-	  guard every request and response a client makes.
+	- `AI.Format.Anthropic.V2023_06_01` (also `AI.Format.Anthropic["2023-06-01"]`): the Anthropic Messages API,
+	  streamed over server-sent events.
+	- `AI.Format.OpenAI.Responses`: OpenAI and OpenAI-compatible endpoints through the Responses API, streamed over
+	  [WebSocket mode](https://developers.openai.com/api/docs/guides/websocket-mode) or server-sent events.
+	  OpenAI providers also expose the moderation API and policy-based content checks.
 
 	On Roblox, API keys can come straight from the experience's secret store through
 	[HttpService:GetSecret](https://create.roblox.com/docs/reference/engine/classes/HttpService#GetSecret),
-	so the key never touches your source code. On Lune, the same `secret` option reads an environment variable.
+	so the key never touches your source code. On Lune, the same `Secret` option reads an environment variable.
 
 	```lua
 	local AI = require(path.to.AI)
 
-	local claude = AI.new({ provider = "anthropic", secret = "ANTHROPIC_API_KEY" })
-
-	local response = claude:create({
-		model = "claude-sonnet-5-5",
-		prompt = "Write a haiku about Luau.",
+	local claude = AI.Provider.new({
+		Format = AI.Format.Anthropic.V2023_06_01,
+		Secret = "anthropic",
+		DefaultModel = "claude-sonnet-5-5",
 	})
-	print(response.text)
 
-	local stream = claude:stream({ model = "claude-sonnet-5-5", prompt = "Count to five." })
-	for event in stream:iter() do
-		if event.type == "text" then
-			print(event.delta)
+	local response = claude:Create({ Prompt = "Write a haiku about Luau." })
+	print(response.Text)
+
+	local stream = claude:Stream({ Prompt = "Count to five." })
+	for event in stream:Iter() do
+		if event.Type == "text" then
+			print(event.Delta)
 		end
 	end
 	```
 ]=]
 local AI = {}
 
---[=[
-	@prop version string
-	@within AI
-	@readonly
-	The version of AI.luau.
-]=]
-AI.version = "0.1.0"
-
 --------------------------------------------------------------------------------
 -- Public types
 --------------------------------------------------------------------------------
 
 --[=[
-	@type ProviderKind "anthropic" | "openai"
+	@type Protocol "anthropic" | "openai"
 	@within AI
-	The wire protocol a client speaks. `"openai"` covers any OpenAI-compatible endpoint that implements the
-	Responses API.
+	The wire protocol behind a [Format].
 ]=]
-export type ProviderKind = "anthropic" | "openai"
+export type Protocol = "anthropic" | "openai"
+
+--[=[
+	@interface Format
+	@within AI
+	.Name string -- Display name, such as `"Anthropic 2023-06-01"`.
+	.Protocol Protocol
+	.Version string? -- The API version sent to the provider, if it has one.
+
+	A wire format and API version. Use the values in [AI.Format]; other tables are rejected.
+]=]
+export type Format = { Name: string, Protocol: Protocol, Version: string? }
+
+--[=[
+	@interface Formats
+	@within AI
+	.Anthropic { V2023_06_01: Format, ["2023-06-01"]: Format, Latest: Format }
+	.OpenAI { Responses: Format, Latest: Format }
+]=]
+export type Formats = {
+	Anthropic: { V2023_06_01: Format, ["2023-06-01"]: Format, Latest: Format },
+	OpenAI: { Responses: Format, Latest: Format },
+}
 
 --[=[
 	@type Transport "websocket" | "sse"
 	@within AI
-	How OpenAI-style clients stream. Anthropic always streams over server-sent events.
+	How OpenAI providers stream. Anthropic always streams over server-sent events.
 ]=]
 export type Transport = "websocket" | "sse"
 
@@ -82,76 +95,76 @@ export type Role = "system" | "user" | "assistant"
 --[=[
 	@interface TextPart
 	@within AI
-	.type "text"
-	.text string
+	.Type "text"
+	.Text string
 ]=]
-export type TextPart = { type: "text", text: string }
+export type TextPart = { Type: "text", Text: string }
 
 --[=[
 	@interface ImagePart
 	@within AI
-	.type "image"
-	.url string? -- A publicly reachable image URL.
-	.data string? -- Base64 encoded image data, used when `url` is absent.
-	.mediaType string? -- The MIME type of `data`. Defaults to `"image/png"`.
+	.Type "image"
+	.Url string? -- A publicly reachable image URL.
+	.Data string? -- Base64 encoded image data, used when `Url` is absent.
+	.MediaType string? -- The MIME type of `Data`. Defaults to `"image/png"`.
 ]=]
-export type ImagePart = { type: "image", url: string?, data: string?, mediaType: string? }
+export type ImagePart = { Type: "image", Url: string?, Data: string?, MediaType: string? }
 
 --[=[
 	@interface ToolCallPart
 	@within AI
-	.type "tool_call"
-	.id string -- Identifier to echo back in a matching [ToolResultPart].
-	.name string
-	.arguments { [string]: any } -- Decoded arguments. Empty if the model produced invalid JSON.
-	.rawArguments string -- The arguments exactly as the model produced them.
-	.itemId string? -- OpenAI output item id, sent back so the call stays paired with its reasoning item.
+	.Type "tool_call"
+	.Id string -- Identifier to echo back in a matching [ToolResultPart].
+	.Name string
+	.Arguments { [string]: any } -- Decoded arguments. Empty if the model produced invalid JSON.
+	.RawArguments string -- The arguments exactly as the model produced them.
+	.ItemId string? -- OpenAI output item id, sent back so the call stays paired with its reasoning item.
 ]=]
 export type ToolCallPart = {
-	type: "tool_call",
-	id: string,
-	name: string,
-	arguments: { [string]: any },
-	rawArguments: string,
-	itemId: string?,
+	Type: "tool_call",
+	Id: string,
+	Name: string,
+	Arguments: { [string]: any },
+	RawArguments: string,
+	ItemId: string?,
 }
 
 --[=[
 	@interface ToolResultPart
 	@within AI
-	.type "tool_result"
-	.toolCallId string
-	.content string
-	.isError boolean?
+	.Type "tool_result"
+	.ToolCallId string
+	.Content string
+	.IsError boolean?
 ]=]
-export type ToolResultPart = { type: "tool_result", toolCallId: string, content: string, isError: boolean? }
+export type ToolResultPart = { Type: "tool_result", ToolCallId: string, Content: string, IsError: boolean? }
 
 --[=[
 	@interface ThinkingPart
 	@within AI
-	.type "thinking"
-	.text string -- Thinking text (Anthropic) or reasoning summary (OpenAI).
-	.provider ProviderKind -- The provider that produced it. Only that provider receives it back.
-	.raw any -- The original block, replayed verbatim on later turns.
+	.Type "thinking"
+	.Text string -- Thinking text (Anthropic) or reasoning summary (OpenAI).
+	.Protocol Protocol -- The protocol that produced it. Only that protocol receives it back.
+	.Raw any -- The original block, replayed verbatim on later turns.
 ]=]
-export type ThinkingPart = { type: "thinking", text: string, provider: ProviderKind, raw: any }
+export type ThinkingPart = { Type: "thinking", Text: string, Protocol: Protocol, Raw: any }
 
 --[=[
 	@interface RefusalPart
 	@within AI
-	.type "refusal"
-	.text string
+	.Type "refusal"
+	.Text string
 ]=]
-export type RefusalPart = { type: "refusal", text: string }
+export type RefusalPart = { Type: "refusal", Text: string }
 
 --[=[
 	@interface RawPart
 	@within AI
-	.type "raw"
-	.provider ProviderKind
-	.raw any -- A provider block AI.luau does not model, such as server tool results.
+	.Type "raw"
+	.Protocol Protocol
+	.Raw any -- A provider block AI.luau does not model, such as server tool results.
 ]=]
-export type RawPart = { type: "raw", provider: ProviderKind, raw: any }
+export type RawPart = { Type: "raw", Protocol: Protocol, Raw: any }
 
 --[=[
 	@type ContentPart TextPart | ImagePart | ToolCallPart | ToolResultPart | ThinkingPart | RefusalPart | RawPart
@@ -162,71 +175,71 @@ export type ContentPart = TextPart | ImagePart | ToolCallPart | ToolResultPart |
 --[=[
 	@interface Message
 	@within AI
-	.role Role
-	.content string | { ContentPart }
+	.Role Role
+	.Content string | { ContentPart }
 ]=]
-export type Message = { role: Role, content: string | { ContentPart } }
+export type Message = { Role: Role, Content: string | { ContentPart } }
 
 --[=[
 	@interface Tool
 	@within AI
-	.name string
-	.description string?
-	.parameters { [string]: any }? -- A JSON Schema object. Defaults to an empty object schema.
-	.strict boolean? -- OpenAI strict schema adherence. Defaults to `false`.
+	.Name string
+	.Description string?
+	.Parameters { [string]: any }? -- A JSON Schema object. Defaults to an empty object schema.
+	.Strict boolean? -- OpenAI strict schema adherence. Defaults to `false`.
 ]=]
-export type Tool = { name: string, description: string?, parameters: { [string]: any }?, strict: boolean? }
+export type Tool = { Name: string, Description: string?, Parameters: { [string]: any }?, Strict: boolean? }
 
 --[=[
-	@type ToolChoice "auto" | "none" | "required" | { name: string }
+	@type ToolChoice "auto" | "none" | "required" | { Name: string }
 	@within AI
 ]=]
-export type ToolChoice = "auto" | "none" | "required" | { name: string }
+export type ToolChoice = "auto" | "none" | "required" | { Name: string }
 
 --[=[
 	@interface Reasoning
 	@within AI
-	.effort string? -- OpenAI reasoning effort, such as `"low"` or `"high"`.
-	.summary string? -- OpenAI reasoning summary mode, such as `"auto"`.
-	.budgetTokens number? -- Anthropic extended thinking budget.
+	.Effort string? -- OpenAI reasoning effort, such as `"low"` or `"high"`.
+	.Summary string? -- OpenAI reasoning summary mode, such as `"auto"`.
+	.BudgetTokens number? -- Anthropic extended thinking budget.
 ]=]
-export type Reasoning = { effort: string?, summary: string?, budgetTokens: number? }
+export type Reasoning = { Effort: string?, Summary: string?, BudgetTokens: number? }
 
 --[=[
 	@interface Request
 	@within AI
-	.model string? -- Falls back to the client's `defaultModel`.
-	.prompt string? -- Shorthand appended as a final user message.
-	.messages { Message }?
-	.system string?
-	.maxTokens number?
-	.temperature number?
-	.topP number?
-	.stop { string }? -- Anthropic only. The Responses API has no stop sequences.
-	.tools { Tool }?
-	.toolChoice ToolChoice?
-	.reasoning Reasoning?
-	.previousResponseId string? -- OpenAI only. Continues a stored or cached response.
-	.store boolean? -- OpenAI only.
-	.streamId string? -- OpenAI WebSocket mode lane. Requests on different lanes run concurrently.
-	.extra { [string]: any }? -- Raw fields merged into the request body last.
+	.Model string? -- Falls back to the provider's `DefaultModel`.
+	.Prompt string? -- Shorthand appended as a final user message.
+	.Messages { Message }?
+	.System string?
+	.MaxTokens number?
+	.Temperature number?
+	.TopP number?
+	.Stop { string }? -- Anthropic only. The Responses API has no stop sequences.
+	.Tools { Tool }?
+	.ToolChoice ToolChoice?
+	.Reasoning Reasoning?
+	.PreviousResponseId string? -- OpenAI only. Continues a stored or cached response.
+	.Store boolean? -- OpenAI only.
+	.StreamId string? -- OpenAI WebSocket mode lane. Requests on different lanes run concurrently.
+	.Extra { [string]: any }? -- Raw fields merged into the request body last, in the provider's own casing.
 ]=]
 export type Request = {
-	model: string?,
-	prompt: string?,
-	messages: { Message }?,
-	system: string?,
-	maxTokens: number?,
-	temperature: number?,
-	topP: number?,
-	stop: { string }?,
-	tools: { Tool }?,
-	toolChoice: ToolChoice?,
-	reasoning: Reasoning?,
-	previousResponseId: string?,
-	store: boolean?,
-	streamId: string?,
-	extra: { [string]: any }?,
+	Model: string?,
+	Prompt: string?,
+	Messages: { Message }?,
+	System: string?,
+	MaxTokens: number?,
+	Temperature: number?,
+	TopP: number?,
+	Stop: { string }?,
+	Tools: { Tool }?,
+	ToolChoice: ToolChoice?,
+	Reasoning: Reasoning?,
+	PreviousResponseId: string?,
+	Store: boolean?,
+	StreamId: string?,
+	Extra: { [string]: any }?,
 }
 
 --[=[
@@ -238,61 +251,61 @@ export type StopReason = "stop" | "length" | "tool_calls" | "content_filter" | "
 --[=[
 	@interface Usage
 	@within AI
-	.inputTokens number
-	.outputTokens number
-	.totalTokens number
-	.cacheReadTokens number?
-	.cacheWriteTokens number?
+	.InputTokens number
+	.OutputTokens number
+	.TotalTokens number
+	.CacheReadTokens number?
+	.CacheWriteTokens number?
 ]=]
 export type Usage = {
-	inputTokens: number,
-	outputTokens: number,
-	totalTokens: number,
-	cacheReadTokens: number?,
-	cacheWriteTokens: number?,
+	InputTokens: number,
+	OutputTokens: number,
+	TotalTokens: number,
+	CacheReadTokens: number?,
+	CacheWriteTokens: number?,
 }
 
 --[=[
 	@interface Response
 	@within AI
-	.id string
-	.model string
-	.provider ProviderKind
-	.content { ContentPart } -- Every output block, in order. Pass it back as an assistant message.
-	.text string -- All text parts concatenated.
-	.toolCalls { ToolCallPart }
-	.stopReason StopReason
-	.usage Usage
-	.raw any -- The decoded provider response.
+	.Id string
+	.Model string
+	.Format Format -- The format of the provider that produced it.
+	.Content { ContentPart } -- Every output block, in order. Pass it back with [AI.Assistant].
+	.Text string -- All text parts concatenated.
+	.ToolCalls { ToolCallPart }
+	.StopReason StopReason
+	.Usage Usage
+	.Raw any -- The decoded provider response.
 ]=]
 export type Response = {
-	id: string,
-	model: string,
-	provider: ProviderKind,
-	content: { ContentPart },
-	text: string,
-	toolCalls: { ToolCallPart },
-	stopReason: StopReason,
-	usage: Usage,
-	raw: any,
+	Id: string,
+	Model: string,
+	Format: Format,
+	Content: { ContentPart },
+	Text: string,
+	ToolCalls: { ToolCallPart },
+	StopReason: StopReason,
+	Usage: Usage,
+	Raw: any,
 }
 
 --[=[
-	@type StreamEvent { type: "start", id: string, model: string } | { type: "text", delta: string, index: number } | { type: "thinking", delta: string, index: number } | { type: "refusal", delta: string, index: number } | { type: "tool_call_start", index: number, id: string, name: string } | { type: "tool_call_delta", index: number, delta: string } | { type: "tool_call", index: number, call: ToolCallPart } | { type: "done", response: Response } | { type: "error", error: AIError }
+	@type StreamEvent { Type: "start", Id: string, Model: string } | { Type: "text", Delta: string, Index: number } | { Type: "thinking", Delta: string, Index: number } | { Type: "refusal", Delta: string, Index: number } | { Type: "tool_call_start", Index: number, Id: string, Name: string } | { Type: "tool_call_delta", Index: number, Delta: string } | { Type: "tool_call", Index: number, Call: ToolCallPart } | { Type: "done", Response: Response } | { Type: "error", Error: AIError }
 	@within AI
-	Normalized streaming events. `index` is the 1-based position of the content block being written.
+	Normalized streaming events. `Index` is the 1-based position of the content block being written.
 	Every stream ends with exactly one `done` or `error` event.
 ]=]
 export type StreamEvent =
-	{ type: "start", id: string, model: string }
-	| { type: "text", delta: string, index: number }
-	| { type: "thinking", delta: string, index: number }
-	| { type: "refusal", delta: string, index: number }
-	| { type: "tool_call_start", index: number, id: string, name: string }
-	| { type: "tool_call_delta", index: number, delta: string }
-	| { type: "tool_call", index: number, call: ToolCallPart }
-	| { type: "done", response: Response }
-	| { type: "error", error: AIError }
+	{ Type: "start", Id: string, Model: string }
+	| { Type: "text", Delta: string, Index: number }
+	| { Type: "thinking", Delta: string, Index: number }
+	| { Type: "refusal", Delta: string, Index: number }
+	| { Type: "tool_call_start", Index: number, Id: string, Name: string }
+	| { Type: "tool_call_delta", Index: number, Delta: string }
+	| { Type: "tool_call", Index: number, Call: ToolCallPart }
+	| { Type: "done", Response: Response }
+	| { Type: "error", Error: AIError }
 
 --[=[
 	@type AIErrorKind "config" | "network" | "http" | "api" | "parse" | "moderation" | "closed" | "cancelled" | "unsupported"
@@ -312,26 +325,26 @@ export type AIErrorKind =
 --[=[
 	@interface AIError
 	@within AI
-	.kind AIErrorKind
-	.message string
-	.status number? -- HTTP status code, when there is one.
-	.code string? -- Provider error code, such as `"rate_limit_exceeded"`.
-	.errorType string? -- Provider error type, such as `"overloaded_error"`.
-	.body string? -- The raw response body of a failed HTTP request.
-	.retryable boolean
-	.check ContentCheck? -- The failing check, for `"moderation"` errors.
+	.Kind AIErrorKind
+	.Message string
+	.Status number? -- HTTP status code, when there is one.
+	.Code string? -- Provider error code, such as `"rate_limit_exceeded"`.
+	.ErrorType string? -- Provider error type, such as `"overloaded_error"`.
+	.Body string? -- The raw response body of a failed HTTP request.
+	.Retryable boolean
+	.Check ContentCheck? -- The failing check, for `"moderation"` errors.
 
-	Every error AI.luau raises is an `AIError` table. Catch it with `pcall` and test it with [AI.isError].
+	Every error AI.luau raises is an `AIError` table. Catch it with `pcall` and test it with [AI.IsError].
 ]=]
 export type AIError = {
-	kind: AIErrorKind,
-	message: string,
-	status: number?,
-	code: string?,
-	errorType: string?,
-	body: string?,
-	retryable: boolean,
-	check: ContentCheck?,
+	Kind: AIErrorKind,
+	Message: string,
+	Status: number?,
+	Code: string?,
+	ErrorType: string?,
+	Body: string?,
+	Retryable: boolean,
+	Check: ContentCheck?,
 }
 
 --[=[
@@ -364,138 +377,136 @@ export type ModerationInput = string | { string } | { ContentPart }
 --[=[
 	@interface ModerationOptions
 	@within AI
-	.model string? -- Defaults to `"omni-moderation-latest"`.
+	.Model string? -- Defaults to `"omni-moderation-latest"`.
 ]=]
-export type ModerationOptions = { model: string? }
+export type ModerationOptions = { Model: string? }
 
 --[=[
 	@interface ModerationResult
 	@within AI
-	.flagged boolean
-	.categories { [string]: boolean }
-	.scores { [string]: number }
-	.appliedInputTypes { [string]: { string } }
+	.Flagged boolean
+	.Categories { [string]: boolean }
+	.Scores { [string]: number }
+	.AppliedInputTypes { [string]: { string } }
 ]=]
 export type ModerationResult = {
-	flagged: boolean,
-	categories: { [string]: boolean },
-	scores: { [string]: number },
-	appliedInputTypes: { [string]: { string } },
+	Flagged: boolean,
+	Categories: { [string]: boolean },
+	Scores: { [string]: number },
+	AppliedInputTypes: { [string]: { string } },
 }
 
 --[=[
 	@interface ModerationResponse
 	@within AI
-	.id string
-	.model string
-	.flagged boolean -- True if any result is flagged.
-	.results { ModerationResult }
-	.raw any
+	.Id string
+	.Model string
+	.Flagged boolean -- True if any result is flagged.
+	.Results { ModerationResult }
+	.Raw any
 ]=]
 export type ModerationResponse = {
-	id: string,
-	model: string,
-	flagged: boolean,
-	results: { ModerationResult },
-	raw: any,
+	Id: string,
+	Model: string,
+	Flagged: boolean,
+	Results: { ModerationResult },
+	Raw: any,
 }
 
 --[=[
 	@interface ContentPolicy
 	@within AI
-	.model string? -- Moderation model to use.
-	.thresholds { [string]: number }? -- Per-category score thresholds in `[0, 1]`.
-	.defaultThreshold number? -- Threshold for categories without one. Without it, the API's own `flagged` verdict is used.
-	.block { string }? -- Only these categories can cause a violation.
-	.allow { string }? -- These categories never cause a violation.
+	.Model string? -- Moderation model to use.
+	.Thresholds { [string]: number }? -- Per-category score thresholds in `[0, 1]`.
+	.DefaultThreshold number? -- Threshold for categories without one. Without it, the API's own `Flagged` verdict is used.
+	.Block { string }? -- Only these categories can cause a violation.
+	.Allow { string }? -- These categories never cause a violation.
 
 	Decides which moderation results count as violations.
 ]=]
 export type ContentPolicy = {
-	model: string?,
-	thresholds: { [string]: number }?,
-	defaultThreshold: number?,
-	block: { string }?,
-	allow: { string }?,
+	Model: string?,
+	Thresholds: { [string]: number }?,
+	DefaultThreshold: number?,
+	Block: { string }?,
+	Allow: { string }?,
 }
 
 --[=[
 	@interface ContentViolation
 	@within AI
-	.category string
-	.score number
-	.threshold number? -- The threshold that was crossed, if the policy set one.
-	.result number -- Index of the moderation result, matching the input order.
+	.Category string
+	.Score number
+	.Threshold number? -- The threshold that was crossed, if the policy set one.
+	.Result number -- Index of the moderation result, matching the input order.
 ]=]
-export type ContentViolation = { category: string, score: number, threshold: number?, result: number }
+export type ContentViolation = { Category: string, Score: number, Threshold: number?, Result: number }
 
 --[=[
 	@interface ContentCheck
 	@within AI
-	.allowed boolean -- True when there are no violations.
-	.flagged boolean -- The API's own verdict, regardless of policy.
-	.violations { ContentViolation } -- Sorted by descending score.
-	.moderation ModerationResponse
+	.Allowed boolean -- True when there are no violations.
+	.Flagged boolean -- The API's own verdict, regardless of policy.
+	.Violations { ContentViolation } -- Sorted by descending score.
+	.Moderation ModerationResponse
 ]=]
 export type ContentCheck = {
-	allowed: boolean,
-	flagged: boolean,
-	violations: { ContentViolation },
-	moderation: ModerationResponse,
+	Allowed: boolean,
+	Flagged: boolean,
+	Violations: { ContentViolation },
+	Moderation: ModerationResponse,
 }
 
 --[=[
 	@interface ModerationGuard
 	@within AI
-	.client Client? -- OpenAI client used for moderation. Defaults to the guarded client itself.
-	.policy ContentPolicy?
-	.input boolean? -- Check the latest message before sending. Defaults to `true`.
-	.output boolean? -- Check the response text before returning it. Defaults to `true`.
+	.Provider Provider? -- OpenAI provider used for moderation. Defaults to the guarded provider itself.
+	.Policy ContentPolicy?
+	.Input boolean? -- Check the latest message before sending. Defaults to `true`.
+	.Output boolean? -- Check the response text before returning it. Defaults to `true`.
 
-	Automatically moderates a client's traffic. Violations raise an [AIError] with kind `"moderation"`.
+	Automatically moderates a provider's traffic. Violations raise an [AIError] with kind `"moderation"`.
 ]=]
-export type ModerationGuard = { client: Client?, policy: ContentPolicy?, input: boolean?, output: boolean? }
+export type ModerationGuard = { Provider: Provider?, Policy: ContentPolicy?, Input: boolean?, Output: boolean? }
 
 --[=[
-	@interface ClientConfig
+	@interface ProviderConfig
 	@within AI
-	.provider ProviderKind
-	.apiKey ApiKey? -- A key or Roblox `Secret`. Takes priority over `secret`.
-	.secret string? -- Roblox secret store key, or Lune environment variable name.
-	.baseUrl string? -- Defaults to the provider's official endpoint, such as `https://api.openai.com/v1`.
-	.headers { [string]: string }? -- Extra headers sent with every request.
-	.defaultModel string?
-	.maxTokens number? -- Anthropic `max_tokens` default. Defaults to `4096`.
-	.maxRetries number? -- Retries for rate limits, overloads and network errors. Defaults to `2`.
-	.transport Transport? -- OpenAI streaming transport. Defaults to `"websocket"`.
-	.streamFallback boolean? -- Emulate streaming with a regular request where streaming is unavailable. Defaults to `true`.
-	.connectTimeout number? -- Seconds to wait for a WebSocket to open. Defaults to `30`.
-	.anthropicVersion string? -- Defaults to `"2023-06-01"`.
-	.anthropicBeta { string }?
-	.organization string? -- OpenAI organization header.
-	.project string? -- OpenAI project header.
-	.moderation ModerationGuard?
+	.Format Format -- One of the values in [AI.Format].
+	.ApiKey ApiKey? -- A key or Roblox `Secret`. Takes priority over `Secret`.
+	.Secret string? -- Roblox secret store key, or Lune environment variable name.
+	.BaseUrl string? -- Defaults to the official endpoint, such as `https://api.openai.com/v1`.
+	.Headers { [string]: string }? -- Extra headers sent with every request.
+	.DefaultModel string?
+	.MaxTokens number? -- Anthropic `max_tokens` default. Defaults to `4096`.
+	.MaxRetries number? -- Retries for rate limits, overloads and network errors. Defaults to `2`.
+	.Transport Transport? -- OpenAI streaming transport. Defaults to `"websocket"`.
+	.StreamFallback boolean? -- Emulate streaming with a regular request where streaming is unavailable. Defaults to `true`.
+	.ConnectTimeout number? -- Seconds to wait for a WebSocket to open. Defaults to `30`.
+	.AnthropicBeta { string }? -- Values for the `anthropic-beta` header.
+	.Organization string? -- OpenAI organization header.
+	.Project string? -- OpenAI project header.
+	.Moderation ModerationGuard?
 
-	When neither `apiKey` nor `secret` is set, the client looks for `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` in the
+	When neither `ApiKey` nor `Secret` is set, the provider looks for `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` in the
 	secret store (Roblox) or environment (Lune). A missing key is only an error for the official endpoints.
 ]=]
-export type ClientConfig = {
-	provider: ProviderKind,
-	apiKey: ApiKey?,
-	secret: string?,
-	baseUrl: string?,
-	headers: { [string]: string }?,
-	defaultModel: string?,
-	maxTokens: number?,
-	maxRetries: number?,
-	transport: Transport?,
-	streamFallback: boolean?,
-	connectTimeout: number?,
-	anthropicVersion: string?,
-	anthropicBeta: { string }?,
-	organization: string?,
-	project: string?,
-	moderation: ModerationGuard?,
+export type ProviderConfig = {
+	Format: Format,
+	ApiKey: ApiKey?,
+	Secret: string?,
+	BaseUrl: string?,
+	Headers: { [string]: string }?,
+	DefaultModel: string?,
+	MaxTokens: number?,
+	MaxRetries: number?,
+	Transport: Transport?,
+	StreamFallback: boolean?,
+	ConnectTimeout: number?,
+	AnthropicBeta: { string }?,
+	Organization: string?,
+	Project: string?,
+	Moderation: ModerationGuard?,
 }
 
 --[=[
@@ -508,62 +519,62 @@ export type ToolHandler = (arguments: { [string]: any }, call: ToolCallPart) -> 
 --[=[
 	@interface RunOptions
 	@within AI
-	.maxSteps number? -- Maximum model calls. Defaults to `8`.
-	.onStep ((response: Response) -> ())? -- Called after every model call.
+	.MaxSteps number? -- Maximum model calls. Defaults to `8`.
+	.OnStep ((response: Response) -> ())? -- Called after every model call.
 ]=]
-export type RunOptions = { maxSteps: number?, onStep: ((response: Response) -> ())? }
+export type RunOptions = { MaxSteps: number?, OnStep: ((response: Response) -> ())? }
 
 --[=[
 	@interface RunResult
 	@within AI
-	.response Response -- The final response.
-	.messages { Message } -- The full conversation, including tool calls and results.
-	.steps number
+	.Response Response -- The final response.
+	.Messages { Message } -- The full conversation, including tool calls and results.
+	.Steps number
 ]=]
-export type RunResult = { response: Response, messages: { Message }, steps: number }
+export type RunResult = { Response: Response, Messages: { Message }, Steps: number }
 
 --[=[
 	@class Stream
 
-	A live response. Read it with [Stream:iter], [Stream:next] or [Stream:await]. A stream has a single consumer.
+	A live response. Read it with [Stream:Iter], [Stream:Next] or [Stream:Await]. A stream has a single consumer.
 ]=]
 export type Stream = {
-	text: string,
-	response: Response?,
-	next: (self: Stream) -> StreamEvent?,
-	iter: (self: Stream) -> () -> StreamEvent?,
-	await: (self: Stream) -> Response,
-	cancel: (self: Stream) -> (),
+	Text: string,
+	Response: Response?,
+	Next: (self: Stream) -> StreamEvent?,
+	Iter: (self: Stream) -> () -> StreamEvent?,
+	Await: (self: Stream) -> Response,
+	Cancel: (self: Stream) -> (),
 }
 
 --[=[
 	@class Session
 
 	A persistent OpenAI Responses [WebSocket mode](https://developers.openai.com/api/docs/guides/websocket-mode)
-	connection, created with [Client:connect]. Reusing one connection keeps recent responses cached server-side,
-	which makes `previousResponseId` continuations faster. Connections last up to 60 minutes.
+	connection, created with [Provider:Connect]. Reusing one connection keeps recent responses cached server-side,
+	which makes `PreviousResponseId` continuations faster. Connections last up to 60 minutes.
 ]=]
 export type Session = {
-	stream: (self: Session, request: Request, onEvent: ((event: StreamEvent) -> ())?) -> Stream,
-	create: (self: Session, request: Request) -> Response,
-	close: (self: Session) -> (),
-	isOpen: (self: Session) -> boolean,
+	Stream: (self: Session, request: Request, onEvent: ((event: StreamEvent) -> ())?) -> Stream,
+	Create: (self: Session, request: Request) -> Response,
+	Close: (self: Session) -> (),
+	IsOpen: (self: Session) -> boolean,
 }
 
 --[=[
-	@class Client
+	@class Provider
 
-	A configured connection to one provider, created with [AI.new].
+	A configured connection to one API, created with [Provider.new].
 ]=]
-export type Client = {
-	provider: ProviderKind,
-	baseUrl: string,
-	create: (self: Client, request: Request) -> Response,
-	stream: (self: Client, request: Request, onEvent: ((event: StreamEvent) -> ())?) -> Stream,
-	connect: (self: Client) -> Session,
-	run: (self: Client, request: Request, handlers: { [string]: ToolHandler }, options: RunOptions?) -> RunResult,
-	moderate: (self: Client, input: ModerationInput, options: ModerationOptions?) -> ModerationResponse,
-	check: (self: Client, input: ModerationInput, policy: ContentPolicy?) -> ContentCheck,
+export type Provider = {
+	Format: Format,
+	BaseUrl: string,
+	Create: (self: Provider, request: Request) -> Response,
+	Stream: (self: Provider, request: Request, onEvent: ((event: StreamEvent) -> ())?) -> Stream,
+	Connect: (self: Provider) -> Session,
+	Run: (self: Provider, request: Request, handlers: { [string]: ToolHandler }, options: RunOptions?) -> RunResult,
+	Moderate: (self: Provider, input: ModerationInput, options: ModerationOptions?) -> ModerationResponse,
+	Check: (self: Provider, input: ModerationInput, policy: ContentPolicy?) -> ContentCheck,
 }
 
 --------------------------------------------------------------------------------
@@ -581,22 +592,22 @@ type ErrorDetails = {
 
 local ErrorMeta = {
 	__tostring = function(err: AIError): string
-		local label = if err.status then `{err.kind} {err.status}` else err.kind
-		return `AI.luau [{label}]: {err.message}`
+		local label = if err.Status then `{err.Kind} {err.Status}` else err.Kind
+		return `AI.luau [{label}]: {err.Message}`
 	end,
 }
 
 local function newError(kind: AIErrorKind, message: string, details: ErrorDetails?): AIError
 	local d: ErrorDetails = details or {}
 	local err: AIError = {
-		kind = kind,
-		message = message,
-		status = d.status,
-		code = d.code,
-		errorType = d.errorType,
-		body = d.body,
-		retryable = d.retryable == true,
-		check = d.check,
+		Kind = kind,
+		Message = message,
+		Status = d.status,
+		Code = d.code,
+		ErrorType = d.errorType,
+		Body = d.body,
+		Retryable = d.retryable == true,
+		Check = d.check,
 	}
 	setmetatable(err :: any, ErrorMeta)
 	return err
@@ -1339,7 +1350,7 @@ local function createLuneRuntime(): Runtime
 					return nil
 				end)
 				if not ok and not cancelled then
-					sink.onError(nil, if isError(err) then (err :: any).message else tostring(err))
+					sink.onError(nil, if isError(err) then (err :: any).Message else tostring(err))
 				end
 			end)
 			return function()
@@ -1663,8 +1674,8 @@ local function newStream(
 	local stream: Stream
 
 	local function deliver(event: StreamEvent)
-		if event.type == "text" then
-			stream.text ..= event.delta
+		if event.Type == "text" then
+			stream.Text ..= event.Delta
 		end
 		tail += 1
 		queue[tail] = event
@@ -1681,8 +1692,8 @@ local function newStream(
 		isFinished = true
 		if err then
 			finalError = err
-			if err.kind ~= "cancelled" then
-				deliver({ type = "error", error = err })
+			if err.Kind ~= "cancelled" then
+				deliver({ Type = "error", Error = err })
 			end
 		end
 		closed = true
@@ -1697,19 +1708,19 @@ local function newStream(
 		if isFinished then
 			return
 		end
-		if event.type == "error" then
-			finish(event.error)
-		elseif event.type == "done" then
+		if event.Type == "error" then
+			finish(event.Error)
+		elseif event.Type == "done" then
 			if guard then
-				local okGuard, guardError = pcall(guard, event.response)
+				local okGuard, guardError = pcall(guard, event.Response)
 				local failure = if okGuard then guardError else asError(guardError, "moderation")
 				if failure then
 					finish(failure)
 					return
 				end
 			end
-			stream.response = event.response
-			stream.text = event.response.text
+			stream.Response = event.Response
+			stream.Text = event.Response.Text
 			deliver(event)
 			finish(nil)
 		else
@@ -1734,32 +1745,32 @@ local function newStream(
 	end
 
 	stream = {
-		text = "",
-		response = nil,
-		next = nextEvent,
-		iter = function(self: Stream): () -> StreamEvent?
+		Text = "",
+		Response = nil,
+		Next = nextEvent,
+		Iter = function(self: Stream): () -> StreamEvent?
 			return function(): StreamEvent?
 				return nextEvent(self)
 			end
 		end,
-		await = function(self: Stream): Response
+		Await = function(self: Stream): Response
 			while true do
 				local event = nextEvent(self)
 				if event == nil then
 					break
-				elseif event.type == "done" then
-					return event.response
-				elseif event.type == "error" then
-					error(event.error)
+				elseif event.Type == "done" then
+					return event.Response
+				elseif event.Type == "error" then
+					error(event.Error)
 				end
 			end
-			local response = self.response
+			local response = self.Response
 			if response then
 				return response
 			end
 			error(finalError or newError("cancelled", "the stream was cancelled"))
 		end,
-		cancel = function(_self: Stream)
+		Cancel = function(_self: Stream)
 			finish(newError("cancelled", "the stream was cancelled"))
 		end,
 	}
@@ -1783,29 +1794,57 @@ end
 
 -- Replays a complete response as stream events, for runtimes where streaming is unavailable.
 local function emitResponse(response: Response, emit: (event: StreamEvent) -> ())
-	emit({ type = "start", id = response.id, model = response.model })
-	for index, part in response.content do
-		if part.type == "text" then
-			emit({ type = "text", delta = part.text, index = index })
-		elseif part.type == "thinking" then
-			emit({ type = "thinking", delta = part.text, index = index })
-		elseif part.type == "refusal" then
-			emit({ type = "refusal", delta = part.text, index = index })
-		elseif part.type == "tool_call" then
-			emit({ type = "tool_call_start", index = index, id = part.id, name = part.name })
-			emit({ type = "tool_call_delta", index = index, delta = part.rawArguments })
-			emit({ type = "tool_call", index = index, call = part })
+	emit({ Type = "start", Id = response.Id, Model = response.Model })
+	for index, part in response.Content do
+		if part.Type == "text" then
+			emit({ Type = "text", Delta = part.Text, Index = index })
+		elseif part.Type == "thinking" then
+			emit({ Type = "thinking", Delta = part.Text, Index = index })
+		elseif part.Type == "refusal" then
+			emit({ Type = "refusal", Delta = part.Text, Index = index })
+		elseif part.Type == "tool_call" then
+			emit({ Type = "tool_call_start", Index = index, Id = part.Id, Name = part.Name })
+			emit({ Type = "tool_call_delta", Index = index, Delta = part.RawArguments })
+			emit({ Type = "tool_call", Index = index, Call = part })
 		end
 	end
-	emit({ type = "done", response = response })
+	emit({ Type = "done", Response = response })
 end
 
 --------------------------------------------------------------------------------
--- Shared provider helpers
+-- Formats
+--------------------------------------------------------------------------------
+
+local knownFormats: { [Format]: boolean } = {}
+
+local function newFormat(name: string, protocol: Protocol, version: string?): Format
+	local format: Format = table.freeze({ Name = name, Protocol = protocol, Version = version })
+	knownFormats[format] = true
+	return format
+end
+
+local ANTHROPIC_2023_06_01 = newFormat("Anthropic 2023-06-01", "anthropic", "2023-06-01")
+local OPENAI_RESPONSES = newFormat("OpenAI Responses", "openai", nil)
+
+local FORMATS: Formats = table.freeze({
+	Anthropic = table.freeze({
+		V2023_06_01 = ANTHROPIC_2023_06_01,
+		["2023-06-01"] = ANTHROPIC_2023_06_01,
+		Latest = ANTHROPIC_2023_06_01,
+	}),
+	OpenAI = table.freeze({
+		Responses = OPENAI_RESPONSES,
+		Latest = OPENAI_RESPONSES,
+	}),
+})
+
+--------------------------------------------------------------------------------
+-- Shared adapter helpers
 --------------------------------------------------------------------------------
 
 type ResolvedConfig = {
-	provider: ProviderKind,
+	format: Format,
+	protocol: Protocol,
 	baseUrl: string,
 	apiKey: ApiKey?,
 	headers: { [string]: string },
@@ -1815,7 +1854,6 @@ type ResolvedConfig = {
 	transport: Transport,
 	streamFallback: boolean,
 	connectTimeout: number,
-	anthropicVersion: string,
 	anthropicBeta: { string }?,
 	organization: string?,
 	project: string?,
@@ -1824,11 +1862,12 @@ type ResolvedConfig = {
 
 type StreamHandler = (data: any, emit: (event: StreamEvent) -> ()) -> boolean
 
-type Provider = {
+-- Translates between AI.luau's types and one wire protocol.
+type Adapter = {
 	path: string,
 	buildBody: (config: ResolvedConfig, request: Request, stream: boolean) -> { [string]: any },
-	parseResponse: (raw: any) -> Response,
-	newStreamHandler: () -> StreamHandler,
+	parseResponse: (format: Format, raw: any) -> Response,
+	newStreamHandler: (format: Format) -> StreamHandler,
 }
 
 local function optionalString(value: any): string?
@@ -1880,7 +1919,7 @@ local RETRYABLE_ERROR_TYPES: { [string]: boolean } = {
 	rate_limit_exceeded = true,
 }
 
--- Builds an error from an `error` stream event of either provider.
+-- Builds an error from an `error` stream event of either protocol.
 local function errorFromEvent(data: any): AIError
 	local inner = if type(data.error) == "table" then data.error else data
 	local code = optionalString(inner.code)
@@ -1897,30 +1936,30 @@ local function errorFromEvent(data: any): AIError
 end
 
 local function collectMessages(request: Request): { Message }
-	local messages: { Message } = table.clone(request.messages or {})
-	if request.prompt then
-		table.insert(messages, { role = "user", content = request.prompt })
+	local messages: { Message } = table.clone(request.Messages or {})
+	if request.Prompt then
+		table.insert(messages, { Role = "user", Content = request.Prompt })
 	end
-	if #messages == 0 and request.previousResponseId == nil then
-		error(newError("config", "a request needs `prompt` or `messages`"))
+	if #messages == 0 and request.PreviousResponseId == nil then
+		error(newError("config", "a request needs `Prompt` or `Messages`"))
 	end
 	return messages
 end
 
 local function collectSystem(request: Request, messages: { Message }): string?
 	local parts: { string } = {}
-	if request.system then
-		table.insert(parts, request.system)
+	if request.System then
+		table.insert(parts, request.System)
 	end
 	for _, message in messages do
-		if message.role == "system" then
-			local content = message.content
+		if message.Role == "system" then
+			local content = message.Content
 			if type(content) == "string" then
 				table.insert(parts, content)
 			else
 				for _, part in content do
-					if part.type == "text" then
-						table.insert(parts, part.text)
+					if part.Type == "text" then
+						table.insert(parts, part.Text)
 					end
 				end
 			end
@@ -1930,16 +1969,16 @@ local function collectSystem(request: Request, messages: { Message }): string?
 end
 
 local function requireModel(config: ResolvedConfig, request: Request): string
-	local model = request.model or config.defaultModel
+	local model = request.Model or config.defaultModel
 	if model == nil then
-		error(newError("config", "no model given; set `model` on the request or `defaultModel` on the client"))
+		error(newError("config", "no model given; set `Model` on the request or `DefaultModel` on the provider"))
 	end
-	return model :: string
+	return model
 end
 
 local function mergeExtra(body: { [string]: any }, request: Request): { [string]: any }
-	if request.extra then
-		for key, value in request.extra do
+	if request.Extra then
+		for key, value in request.Extra do
 			body[key] = value
 		end
 	end
@@ -1958,7 +1997,7 @@ local function parseArguments(text: string): { [string]: any }
 end
 
 local function buildResponse(
-	provider: ProviderKind,
+	format: Format,
 	id: string,
 	model: string,
 	content: { ContentPart },
@@ -1969,22 +2008,22 @@ local function buildResponse(
 	local texts: { string } = {}
 	local toolCalls: { ToolCallPart } = {}
 	for _, part in content do
-		if part.type == "text" then
-			table.insert(texts, part.text)
-		elseif part.type == "tool_call" then
+		if part.Type == "text" then
+			table.insert(texts, part.Text)
+		elseif part.Type == "tool_call" then
 			table.insert(toolCalls, part)
 		end
 	end
 	return {
-		id = id,
-		model = model,
-		provider = provider,
-		content = content,
-		text = table.concat(texts),
-		toolCalls = toolCalls,
-		stopReason = stopReason,
-		usage = usage,
-		raw = raw,
+		Id = id,
+		Model = model,
+		Format = format,
+		Content = content,
+		Text = table.concat(texts),
+		ToolCalls = toolCalls,
+		StopReason = stopReason,
+		Usage = usage,
+		Raw = raw,
 	}
 end
 
@@ -1993,10 +2032,10 @@ local function numberOr(value: any, default: number): number
 end
 
 local function imageDataUri(part: ImagePart): string?
-	if part.url then
-		return part.url
-	elseif part.data then
-		return `data:{part.mediaType or "image/png"};base64,{part.data}`
+	if part.Url then
+		return part.Url
+	elseif part.Data then
+		return `data:{part.MediaType or "image/png"};base64,{part.Data}`
 	end
 	return nil
 end
@@ -2011,33 +2050,33 @@ local function anthropicBlocks(content: string | { ContentPart }): any
 	end
 	local blocks: { any } = {}
 	for _, part in content do
-		if part.type == "text" then
-			table.insert(blocks, { type = "text", text = part.text })
-		elseif part.type == "image" then
-			if part.url then
-				table.insert(blocks, { type = "image", source = { type = "url", url = part.url } })
-			elseif part.data then
+		if part.Type == "text" then
+			table.insert(blocks, { type = "text", text = part.Text })
+		elseif part.Type == "image" then
+			if part.Url then
+				table.insert(blocks, { type = "image", source = { type = "url", url = part.Url } })
+			elseif part.Data then
 				table.insert(blocks, {
 					type = "image",
-					source = { type = "base64", media_type = part.mediaType or "image/png", data = part.data },
+					source = { type = "base64", media_type = part.MediaType or "image/png", data = part.Data },
 				})
 			end
-		elseif part.type == "tool_call" then
+		elseif part.Type == "tool_call" then
 			table.insert(
 				blocks,
-				{ type = "tool_use", id = part.id, name = part.name, input = markObject(part.arguments) }
+				{ type = "tool_use", id = part.Id, name = part.Name, input = markObject(part.Arguments) }
 			)
-		elseif part.type == "tool_result" then
+		elseif part.Type == "tool_result" then
 			table.insert(blocks, {
 				type = "tool_result",
-				tool_use_id = part.toolCallId,
-				content = part.content,
-				is_error = if part.isError then true else nil,
+				tool_use_id = part.ToolCallId,
+				content = part.Content,
+				is_error = if part.IsError then true else nil,
 			})
-		elseif part.type == "refusal" then
-			table.insert(blocks, { type = "text", text = part.text })
-		elseif (part.type == "thinking" or part.type == "raw") and part.provider == "anthropic" then
-			local raw = part.raw
+		elseif part.Type == "refusal" then
+			table.insert(blocks, { type = "text", text = part.Text })
+		elseif (part.Type == "thinking" or part.Type == "raw") and part.Protocol == "anthropic" then
+			local raw = part.Raw
 			if type(raw) == "table" and type(raw.input) == "table" then
 				markObject(raw.input)
 			end
@@ -2062,67 +2101,68 @@ local function anthropicUsage(raw: any): Usage
 	local input = numberOr(usage.input_tokens, 0)
 	local output = numberOr(usage.output_tokens, 0)
 	return {
-		inputTokens = input,
-		outputTokens = output,
-		totalTokens = input + output,
-		cacheReadTokens = usage.cache_read_input_tokens,
-		cacheWriteTokens = usage.cache_creation_input_tokens,
+		InputTokens = input,
+		OutputTokens = output,
+		TotalTokens = input + output,
+		CacheReadTokens = usage.cache_read_input_tokens,
+		CacheWriteTokens = usage.cache_creation_input_tokens,
 	}
 end
 
 local function anthropicPart(block: any): ContentPart
 	local kind = block.type
 	if kind == "text" then
-		return { type = "text", text = block.text or "" }
+		return { Type = "text", Text = block.text or "" }
 	elseif kind == "tool_use" then
 		local input = if type(block.input) == "table" then block.input else {}
 		return {
-			type = "tool_call",
-			id = block.id,
-			name = block.name,
-			arguments = markObject(input),
-			rawArguments = encodeJson(markObject(input)),
+			Type = "tool_call",
+			Id = block.id,
+			Name = block.name,
+			Arguments = markObject(input),
+			RawArguments = encodeJson(markObject(input)),
 		}
 	elseif kind == "thinking" then
-		return { type = "thinking", text = block.thinking or "", provider = "anthropic", raw = block }
+		return { Type = "thinking", Text = block.thinking or "", Protocol = "anthropic", Raw = block }
 	elseif kind == "redacted_thinking" then
-		return { type = "thinking", text = "", provider = "anthropic", raw = block }
+		return { Type = "thinking", Text = "", Protocol = "anthropic", Raw = block }
 	end
-	return { type = "raw", provider = "anthropic", raw = block }
+	return { Type = "raw", Protocol = "anthropic", Raw = block }
 end
 
-local AnthropicProvider: Provider = {
+local AnthropicAdapter: Adapter = {
 	path = "/messages",
 	buildBody = function(config: ResolvedConfig, request: Request, stream: boolean): { [string]: any }
 		local messages = collectMessages(request)
-		local wire = {}
+		local wire: { any } = {}
 		for _, message in messages do
-			if message.role ~= "system" then
-				table.insert(wire, { role = message.role, content = anthropicBlocks(message.content) })
+			if message.Role ~= "system" then
+				table.insert(wire, { role = message.Role, content = anthropicBlocks(message.Content) })
 			end
 		end
 		local body: { [string]: any } = {
 			model = requireModel(config, request),
-			max_tokens = request.maxTokens or config.maxTokens,
+			max_tokens = request.MaxTokens or config.maxTokens,
 			messages = wire,
 			system = collectSystem(request, messages),
-			temperature = request.temperature,
-			top_p = request.topP,
-			stop_sequences = request.stop,
+			temperature = request.Temperature,
+			top_p = request.TopP,
+			stop_sequences = request.Stop,
 			stream = if stream then true else nil,
 		}
-		if request.tools and #request.tools > 0 then
-			local tools = {}
-			for _, tool in request.tools do
-				table.insert(tools, {
-					name = tool.name,
-					description = tool.description,
-					input_schema = normalizeSchema(tool.parameters),
+		local tools = request.Tools
+		if tools and #tools > 0 then
+			local wireTools: { any } = {}
+			for _, tool in tools do
+				table.insert(wireTools, {
+					name = tool.Name,
+					description = tool.Description,
+					input_schema = normalizeSchema(tool.Parameters),
 				})
 			end
-			body.tools = tools
+			body.tools = wireTools
 		end
-		local choice = request.toolChoice
+		local choice = request.ToolChoice
 		if choice == "auto" then
 			body.tool_choice = { type = "auto" }
 		elseif choice == "none" then
@@ -2130,18 +2170,18 @@ local AnthropicProvider: Provider = {
 		elseif choice == "required" then
 			body.tool_choice = { type = "any" }
 		elseif type(choice) == "table" then
-			body.tool_choice = { type = "tool", name = choice.name }
+			body.tool_choice = { type = "tool", name = choice.Name }
 		end
-		local reasoning = request.reasoning
-		if reasoning and reasoning.budgetTokens then
-			body.thinking = { type = "enabled", budget_tokens = reasoning.budgetTokens }
+		local reasoning = request.Reasoning
+		if reasoning and reasoning.BudgetTokens then
+			body.thinking = { type = "enabled", budget_tokens = reasoning.BudgetTokens }
 		end
-		if request.previousResponseId or request.store ~= nil then
-			error(newError("config", "`previousResponseId` and `store` are only supported by OpenAI clients"))
+		if request.PreviousResponseId or request.Store ~= nil then
+			error(newError("config", "`PreviousResponseId` and `Store` are only supported by OpenAI formats"))
 		end
 		return mergeExtra(body, request)
 	end,
-	parseResponse = function(raw: any): Response
+	parseResponse = function(format: Format, raw: any): Response
 		if type(raw) ~= "table" then
 			error(newError("parse", "unexpected response shape from the Messages API"))
 		end
@@ -2153,7 +2193,7 @@ local AnthropicProvider: Provider = {
 			table.insert(content, anthropicPart(block))
 		end
 		return buildResponse(
-			"anthropic",
+			format,
 			raw.id or "",
 			raw.model or "",
 			content,
@@ -2162,7 +2202,7 @@ local AnthropicProvider: Provider = {
 			raw
 		)
 	end,
-	newStreamHandler = function(): StreamHandler
+	newStreamHandler = function(format: Format): StreamHandler
 		type Block = {
 			kind: string,
 			text: string,
@@ -2195,7 +2235,7 @@ local AnthropicProvider: Provider = {
 				for key, value in message.usage or {} do
 					usage[key] = value
 				end
-				emit({ type = "start", id = message.id or "", model = message.model or "" })
+				emit({ Type = "start", Id = message.id or "", Model = message.model or "" })
 			elseif kind == "content_block_start" then
 				local index = numberOr(data.index, #blocks) + 1
 				local block = data.content_block or {}
@@ -2207,7 +2247,7 @@ local AnthropicProvider: Provider = {
 					raw = block,
 				}
 				if block.type == "tool_use" then
-					emit({ type = "tool_call_start", index = index, id = block.id or "", name = block.name or "" })
+					emit({ Type = "tool_call_start", Index = index, Id = block.id or "", Name = block.name or "" })
 				end
 			elseif kind == "content_block_delta" then
 				local index = numberOr(data.index, 0) + 1
@@ -2216,15 +2256,15 @@ local AnthropicProvider: Provider = {
 				if block then
 					if delta.type == "text_delta" then
 						block.text ..= delta.text
-						emit({ type = "text", delta = delta.text, index = index })
+						emit({ Type = "text", Delta = delta.text, Index = index })
 					elseif delta.type == "input_json_delta" then
 						block.json ..= delta.partial_json
 						if block.kind == "tool_use" then
-							emit({ type = "tool_call_delta", index = index, delta = delta.partial_json })
+							emit({ Type = "tool_call_delta", Index = index, Delta = delta.partial_json })
 						end
 					elseif delta.type == "thinking_delta" then
 						block.text ..= delta.thinking
-						emit({ type = "thinking", delta = delta.thinking, index = index })
+						emit({ Type = "thinking", Delta = delta.thinking, Index = index })
 					elseif delta.type == "signature_delta" then
 						block.signature = (block.signature or "") .. delta.signature
 					end
@@ -2234,8 +2274,8 @@ local AnthropicProvider: Provider = {
 				local block = blocks[index]
 				if block and block.kind == "tool_use" then
 					local part = anthropicPart(finalBlock(block))
-					if part.type == "tool_call" then
-						emit({ type = "tool_call", index = index, call = part })
+					if part.Type == "tool_call" then
+						emit({ Type = "tool_call", Index = index, Call = part })
 					end
 				end
 			elseif kind == "message_delta" then
@@ -2245,7 +2285,7 @@ local AnthropicProvider: Provider = {
 					usage[key] = value
 				end
 			elseif kind == "message_stop" then
-				local rawBlocks = {}
+				local rawBlocks: { any } = {}
 				local content: { ContentPart } = {}
 				local count = 0
 				for index in blocks do
@@ -2264,9 +2304,9 @@ local AnthropicProvider: Provider = {
 				raw.stop_reason = stopReason
 				raw.usage = usage
 				emit({
-					type = "done",
-					response = buildResponse(
-						"anthropic",
+					Type = "done",
+					Response = buildResponse(
+						format,
 						message.id or "",
 						message.model or "",
 						content,
@@ -2277,7 +2317,7 @@ local AnthropicProvider: Provider = {
 				})
 				return true
 			elseif kind == "error" then
-				emit({ type = "error", error = errorFromEvent(data) })
+				emit({ Type = "error", Error = errorFromEvent(data) })
 				return true
 			end
 			return false
@@ -2292,8 +2332,8 @@ local AnthropicProvider: Provider = {
 local function openaiInput(messages: { Message }): { any }
 	local items: { any } = {}
 	for _, message in messages do
-		local role = message.role
-		local content = message.content
+		local role = message.Role
+		local content = message.Content
 		if role == "system" then
 			continue
 		elseif type(content) == "string" then
@@ -2314,34 +2354,34 @@ local function openaiInput(messages: { Message }): { any }
 			end
 		end
 		for _, part in content do
-			if part.type == "text" or part.type == "refusal" then
+			if part.Type == "text" or part.Type == "refusal" then
 				if role == "assistant" then
-					table.insert(assistantText, part.text)
+					table.insert(assistantText, part.Text)
 				else
-					table.insert(parts, { type = "input_text", text = part.text })
+					table.insert(parts, { type = "input_text", text = part.Text })
 				end
-			elseif part.type == "image" then
+			elseif part.Type == "image" then
 				local url = imageDataUri(part)
 				if url then
 					table.insert(parts, { type = "input_image", image_url = url })
 				end
-			elseif part.type == "tool_call" then
+			elseif part.Type == "tool_call" then
 				flush()
 				table.insert(items, {
 					type = "function_call",
-					id = part.itemId,
-					call_id = part.id,
-					name = part.name,
-					arguments = if part.rawArguments ~= ""
-						then part.rawArguments
-						else encodeJson(markObject(part.arguments)),
+					id = part.ItemId,
+					call_id = part.Id,
+					name = part.Name,
+					arguments = if part.RawArguments ~= ""
+						then part.RawArguments
+						else encodeJson(markObject(part.Arguments)),
 				})
-			elseif part.type == "tool_result" then
+			elseif part.Type == "tool_result" then
 				flush()
-				table.insert(items, { type = "function_call_output", call_id = part.toolCallId, output = part.content })
-			elseif (part.type == "thinking" or part.type == "raw") and part.provider == "openai" then
+				table.insert(items, { type = "function_call_output", call_id = part.ToolCallId, output = part.Content })
+			elseif (part.Type == "thinking" or part.Type == "raw") and part.Protocol == "openai" then
 				flush()
-				table.insert(items, markObject(part.raw))
+				table.insert(items, markObject(part.Raw))
 			end
 		end
 		flush()
@@ -2355,27 +2395,27 @@ local function openaiUsage(raw: any): Usage
 	local output = numberOr(usage.output_tokens, 0)
 	local details = usage.input_tokens_details
 	return {
-		inputTokens = input,
-		outputTokens = output,
-		totalTokens = numberOr(usage.total_tokens, input + output),
-		cacheReadTokens = if type(details) == "table" then details.cached_tokens else nil,
-		cacheWriteTokens = nil,
+		InputTokens = input,
+		OutputTokens = output,
+		TotalTokens = numberOr(usage.total_tokens, input + output),
+		CacheReadTokens = if type(details) == "table" then details.cached_tokens else nil,
+		CacheWriteTokens = nil,
 	}
 end
 
 local function openaiToolCall(item: any): ToolCallPart
 	local rawArguments = if type(item.arguments) == "string" then item.arguments else ""
 	return {
-		type = "tool_call",
-		id = item.call_id or item.id or "",
-		name = item.name or "",
-		arguments = parseArguments(rawArguments),
-		rawArguments = rawArguments,
-		itemId = if type(item.id) == "string" and item.call_id ~= nil then item.id else nil,
+		Type = "tool_call",
+		Id = item.call_id or item.id or "",
+		Name = item.name or "",
+		Arguments = parseArguments(rawArguments),
+		RawArguments = rawArguments,
+		ItemId = if type(item.id) == "string" and item.call_id ~= nil then item.id else nil,
 	}
 end
 
-local function openaiParse(raw: any): Response
+local function openaiParse(format: Format, raw: any): Response
 	if type(raw) ~= "table" then
 		error(newError("parse", "unexpected response shape from the Responses API"))
 	end
@@ -2388,9 +2428,9 @@ local function openaiParse(raw: any): Response
 		if kind == "message" then
 			for _, block in item.content or {} do
 				if block.type == "output_text" then
-					table.insert(content, { type = "text", text = block.text or "" })
+					table.insert(content, { Type = "text", Text = block.text or "" })
 				elseif block.type == "refusal" then
-					table.insert(content, { type = "refusal", text = block.refusal or "" })
+					table.insert(content, { Type = "refusal", Text = block.refusal or "" })
 				end
 			end
 		elseif kind == "function_call" then
@@ -2402,22 +2442,24 @@ local function openaiParse(raw: any): Response
 					table.insert(summary, entry.text)
 				end
 			end
-			table.insert(
-				content,
-				{ type = "thinking", text = table.concat(summary, "\n\n"), provider = "openai", raw = item }
-			)
+			table.insert(content, {
+				Type = "thinking",
+				Text = table.concat(summary, "\n\n"),
+				Protocol = "openai",
+				Raw = item,
+			})
 		else
-			table.insert(content, { type = "raw", provider = "openai", raw = item })
+			table.insert(content, { Type = "raw", Protocol = "openai", Raw = item })
 		end
 	end
 	local stopReason: StopReason = "unknown"
 	if raw.status == "completed" then
 		stopReason = "stop"
 		for _, part in content do
-			if part.type == "tool_call" then
+			if part.Type == "tool_call" then
 				stopReason = "tool_calls"
 				break
-			elseif part.type == "refusal" then
+			elseif part.Type == "refusal" then
 				stopReason = "refusal"
 			end
 		end
@@ -2429,13 +2471,13 @@ local function openaiParse(raw: any): Response
 			elseif reason == "content_filter" then "content_filter"
 			else "unknown"
 	end
-	return buildResponse("openai", raw.id or "", raw.model or "", content, stopReason, openaiUsage(raw.usage), raw)
+	return buildResponse(format, raw.id or "", raw.model or "", content, stopReason, openaiUsage(raw.usage), raw)
 end
 
-local OpenAIProvider: Provider = {
+local OpenAIAdapter: Adapter = {
 	path = "/responses",
 	buildBody = function(config: ResolvedConfig, request: Request, stream: boolean): { [string]: any }
-		if request.stop then
+		if request.Stop then
 			error(newError("config", "the Responses API does not support stop sequences"))
 		end
 		local messages = collectMessages(request)
@@ -2443,72 +2485,73 @@ local OpenAIProvider: Provider = {
 			model = requireModel(config, request),
 			input = openaiInput(messages),
 			instructions = collectSystem(request, messages),
-			max_output_tokens = request.maxTokens,
-			temperature = request.temperature,
-			top_p = request.topP,
-			store = request.store,
-			previous_response_id = request.previousResponseId,
+			max_output_tokens = request.MaxTokens,
+			temperature = request.Temperature,
+			top_p = request.TopP,
+			store = request.Store,
+			previous_response_id = request.PreviousResponseId,
 			stream = if stream then true else nil,
 		}
-		if request.tools and #request.tools > 0 then
-			local tools = {}
-			for _, tool in request.tools do
-				table.insert(tools, {
+		local tools = request.Tools
+		if tools and #tools > 0 then
+			local wireTools: { any } = {}
+			for _, tool in tools do
+				table.insert(wireTools, {
 					type = "function",
-					name = tool.name,
-					description = tool.description,
-					parameters = normalizeSchema(tool.parameters),
-					strict = if tool.strict ~= nil then tool.strict else false,
+					name = tool.Name,
+					description = tool.Description,
+					parameters = normalizeSchema(tool.Parameters),
+					strict = if tool.Strict ~= nil then tool.Strict else false,
 				})
 			end
-			body.tools = tools
+			body.tools = wireTools
 		end
-		local choice = request.toolChoice
+		local choice = request.ToolChoice
 		if type(choice) == "string" then
 			body.tool_choice = choice
 		elseif type(choice) == "table" then
-			body.tool_choice = { type = "function", name = choice.name }
+			body.tool_choice = { type = "function", name = choice.Name }
 		end
-		local reasoning = request.reasoning
-		if reasoning and (reasoning.effort or reasoning.summary) then
-			body.reasoning = { effort = reasoning.effort, summary = reasoning.summary }
+		local reasoning = request.Reasoning
+		if reasoning and (reasoning.Effort or reasoning.Summary) then
+			body.reasoning = { effort = reasoning.Effort, summary = reasoning.Summary }
 		end
 		return mergeExtra(body, request)
 	end,
 	parseResponse = openaiParse,
-	newStreamHandler = function(): StreamHandler
+	newStreamHandler = function(format: Format): StreamHandler
 		return function(data: any, emit: (event: StreamEvent) -> ()): boolean
 			local kind = data.type
 			local index = numberOr(data.output_index, 0) + 1
 			if kind == "response.created" then
 				local response = data.response or {}
-				emit({ type = "start", id = response.id or "", model = response.model or "" })
+				emit({ Type = "start", Id = response.id or "", Model = response.model or "" })
 			elseif kind == "response.output_item.added" then
 				local item = data.item or {}
 				if item.type == "function_call" then
-					emit({ type = "tool_call_start", index = index, id = item.call_id or "", name = item.name or "" })
+					emit({ Type = "tool_call_start", Index = index, Id = item.call_id or "", Name = item.name or "" })
 				end
 			elseif kind == "response.output_text.delta" then
-				emit({ type = "text", delta = data.delta or "", index = index })
+				emit({ Type = "text", Delta = data.delta or "", Index = index })
 			elseif kind == "response.refusal.delta" then
-				emit({ type = "refusal", delta = data.delta or "", index = index })
+				emit({ Type = "refusal", Delta = data.delta or "", Index = index })
 			elseif kind == "response.function_call_arguments.delta" then
-				emit({ type = "tool_call_delta", index = index, delta = data.delta or "" })
+				emit({ Type = "tool_call_delta", Index = index, Delta = data.delta or "" })
 			elseif kind == "response.reasoning_summary_text.delta" or kind == "response.reasoning_text.delta" then
-				emit({ type = "thinking", delta = data.delta or "", index = index })
+				emit({ Type = "thinking", Delta = data.delta or "", Index = index })
 			elseif kind == "response.output_item.done" then
 				local item = data.item or {}
 				if item.type == "function_call" then
-					emit({ type = "tool_call", index = index, call = openaiToolCall(item) })
+					emit({ Type = "tool_call", Index = index, Call = openaiToolCall(item) })
 				end
 			elseif kind == "response.completed" or kind == "response.incomplete" then
-				emit({ type = "done", response = openaiParse(data.response) })
+				emit({ Type = "done", Response = openaiParse(format, data.response) })
 				return true
 			elseif kind == "response.failed" then
-				emit({ type = "error", error = errorFromEvent(data.response or data) })
+				emit({ Type = "error", Error = errorFromEvent(data.response or data) })
 				return true
 			elseif kind == "error" then
-				emit({ type = "error", error = errorFromEvent(data) })
+				emit({ Type = "error", Error = errorFromEvent(data) })
 				return true
 			end
 			return false
@@ -2533,11 +2576,11 @@ local function moderationInput(input: ModerationInput): any
 	end
 	local parts: { any } = {}
 	for _, part in list :: { ContentPart } do
-		if part.type == "text" or part.type == "refusal" then
-			table.insert(parts, { type = "text", text = part.text })
-		elseif part.type == "tool_result" then
-			table.insert(parts, { type = "text", text = part.content })
-		elseif part.type == "image" then
+		if part.Type == "text" or part.Type == "refusal" then
+			table.insert(parts, { type = "text", text = part.Text })
+		elseif part.Type == "tool_result" then
+			table.insert(parts, { type = "text", text = part.Content })
+		elseif part.Type == "image" then
 			local url = imageDataUri(part)
 			if url then
 				table.insert(parts, { type = "image_url", image_url = { url = url } })
@@ -2563,47 +2606,47 @@ end
 
 local function evaluatePolicy(moderation: ModerationResponse, policy: ContentPolicy?): ContentCheck
 	local rules: ContentPolicy = policy or {}
-	local allow = toSet(rules.allow) or {}
-	local block = toSet(rules.block)
-	local thresholds = rules.thresholds or {}
+	local allow = toSet(rules.Allow) or {}
+	local block = toSet(rules.Block)
+	local thresholds = rules.Thresholds or {}
 	local violations: { ContentViolation } = {}
-	for resultIndex, result in moderation.results do
+	for resultIndex, result in moderation.Results do
 		local considered: { [string]: boolean } = {}
 		local function consider(category: string)
 			if considered[category] or allow[category] or (block and not block[category]) then
 				return
 			end
 			considered[category] = true
-			local score = result.scores[category] or 0
-			local threshold = thresholds[category] or rules.defaultThreshold
-			local violated = if threshold then score >= threshold else result.categories[category] == true
+			local score = result.Scores[category] or 0
+			local threshold = thresholds[category] or rules.DefaultThreshold
+			local violated = if threshold then score >= threshold else result.Categories[category] == true
 			if violated then
 				table.insert(violations, {
-					category = category,
-					score = score,
-					threshold = threshold,
-					result = resultIndex,
+					Category = category,
+					Score = score,
+					Threshold = threshold,
+					Result = resultIndex,
 				})
 			end
 		end
-		for category in result.scores do
+		for category in result.Scores do
 			consider(category)
 		end
-		for category in result.categories do
+		for category in result.Categories do
 			consider(category)
 		end
 	end
 	table.sort(violations, function(a: ContentViolation, b: ContentViolation): boolean
-		if a.score ~= b.score then
-			return a.score > b.score
+		if a.Score ~= b.Score then
+			return a.Score > b.Score
 		end
-		return a.category < b.category
+		return a.Category < b.Category
 	end)
 	return {
-		allowed = #violations == 0,
-		flagged = moderation.flagged,
-		violations = violations,
-		moderation = moderation,
+		Allowed = #violations == 0,
+		Flagged = moderation.Flagged,
+		Violations = violations,
+		Moderation = moderation,
 	}
 end
 
@@ -2627,30 +2670,30 @@ local function parseModeration(raw: any): ModerationResponse
 		local flagged = entry.flagged == true
 		anyFlagged = anyFlagged or flagged
 		table.insert(results, {
-			flagged = flagged,
-			categories = categories,
-			scores = scores,
-			appliedInputTypes = entry.category_applied_input_types or {},
+			Flagged = flagged,
+			Categories = categories,
+			Scores = scores,
+			AppliedInputTypes = entry.category_applied_input_types or {},
 		})
 	end
-	return { id = raw.id or "", model = raw.model or "", flagged = anyFlagged, results = results, raw = raw }
+	return { Id = raw.id or "", Model = raw.model or "", Flagged = anyFlagged, Results = results, Raw = raw }
 end
 
 -- The content of the latest non-assistant message, which is what an input guard checks.
 local function latestUserContent(request: Request): ModerationInput?
-	if request.prompt then
-		return request.prompt
+	if request.Prompt then
+		return request.Prompt
 	end
-	local messages = request.messages or {}
+	local messages = request.Messages or {}
 	for index = #messages, 1, -1 do
 		local message = messages[index]
-		if message.role ~= "assistant" then
-			local content = message.content
+		if message.Role ~= "assistant" then
+			local content = message.Content
 			if type(content) == "string" then
 				return if content ~= "" then content else nil
 			end
 			for _, part in content do
-				if part.type == "text" or part.type == "image" or part.type == "tool_result" then
+				if part.Type == "text" or part.Type == "image" or part.Type == "tool_result" then
 					return content
 				end
 			end
@@ -2661,30 +2704,30 @@ local function latestUserContent(request: Request): ModerationInput?
 end
 
 --------------------------------------------------------------------------------
--- Clients
+-- Providers
 --------------------------------------------------------------------------------
 
-local DEFAULT_BASE_URLS: { [ProviderKind]: string } = {
+local DEFAULT_BASE_URLS: { [Protocol]: string } = {
 	anthropic = "https://api.anthropic.com/v1",
 	openai = "https://api.openai.com/v1",
 }
 
-local DEFAULT_SECRET_NAMES: { [ProviderKind]: string } = {
+local DEFAULT_SECRET_NAMES: { [Protocol]: string } = {
 	anthropic = "ANTHROPIC_API_KEY",
 	openai = "OPENAI_API_KEY",
 }
 
-local PROVIDERS: { [ProviderKind]: Provider } = {
-	anthropic = AnthropicProvider,
-	openai = OpenAIProvider,
+local ADAPTERS: { [Protocol]: Adapter } = {
+	anthropic = AnthropicAdapter,
+	openai = OpenAIAdapter,
 }
 
 local DEFAULT_LANE = "\0default"
 
-type ClientState = {
+type ProviderState = {
 	config: ResolvedConfig,
-	provider: Provider,
-	client: Client?,
+	adapter: Adapter,
+	provider: Provider?,
 }
 
 type SessionState = {
@@ -2706,8 +2749,8 @@ local function requestHeaders(config: ResolvedConfig, json: boolean): Headers
 		headers["Content-Type"] = "application/json"
 	end
 	local key = config.apiKey
-	if config.provider == "anthropic" then
-		headers["anthropic-version"] = config.anthropicVersion
+	if config.protocol == "anthropic" then
+		headers["anthropic-version"] = config.format.Version or "2023-06-01"
 		local beta = config.anthropicBeta
 		if beta and #beta > 0 then
 			headers["anthropic-beta"] = table.concat(beta, ",")
@@ -2739,7 +2782,7 @@ local function backoff(attempt: number, retryAfter: number?): number
 	return math.min(8, 0.5 * 2 ^ (attempt - 1)) * (0.75 + math.random() * 0.5)
 end
 
-local function postJson(state: ClientState, path: string, body: any): any
+local function postJson(state: ProviderState, path: string, body: any): any
 	local config = state.config
 	local request: HttpRequest = {
 		url = config.baseUrl .. path,
@@ -2761,7 +2804,7 @@ local function postJson(state: ClientState, path: string, body: any): any
 		else
 			failure = asError(result, "network")
 		end
-		if not failure.retryable or attempt >= config.maxRetries then
+		if not failure.Retryable or attempt >= config.maxRetries then
 			error(failure)
 		end
 		attempt += 1
@@ -2769,57 +2812,57 @@ local function postJson(state: ClientState, path: string, body: any): any
 	end
 end
 
-local function moderatorFor(state: ClientState, guard: ModerationGuard): Client
-	local moderator = guard.client or state.client
-	if moderator == nil or moderator.provider ~= "openai" then
-		error(newError("config", "moderation needs an OpenAI client; set `moderation.client`"))
+local function moderatorFor(state: ProviderState, guard: ModerationGuard): Provider
+	local moderator = guard.Provider or state.provider
+	if moderator == nil or moderator.Format.Protocol ~= "openai" then
+		error(newError("config", "moderation needs an OpenAI provider; set `Moderation.Provider`"))
 	end
-	return moderator :: Client
+	return moderator
 end
 
 local function moderationError(check: ContentCheck, direction: string): AIError
-	local top = check.violations[1]
-	local detail = if top then ` ({top.category}, score {string.format("%.3f", top.score)})` else ""
+	local top = check.Violations[1]
+	local detail = if top then ` ({top.Category}, score {string.format("%.3f", top.Score)})` else ""
 	return newError("moderation", `the {direction} was blocked by moderation{detail}`, { check = check })
 end
 
-local function guardInput(state: ClientState, request: Request)
+local function guardInput(state: ProviderState, request: Request)
 	local guard = state.config.moderation
-	if guard == nil or guard.input == false then
+	if guard == nil or guard.Input == false then
 		return
 	end
 	local content = latestUserContent(request)
 	if content == nil then
 		return
 	end
-	local check = moderatorFor(state, guard):check(content, guard.policy)
-	if not check.allowed then
+	local check = moderatorFor(state, guard):Check(content, guard.Policy)
+	if not check.Allowed then
 		error(moderationError(check, "input"))
 	end
 end
 
-local function outputGuard(state: ClientState): ((response: Response) -> AIError?)?
+local function outputGuard(state: ProviderState): ((response: Response) -> AIError?)?
 	local guard = state.config.moderation
-	if guard == nil or guard.output == false then
+	if guard == nil or guard.Output == false then
 		return nil
 	end
 	return function(response: Response): AIError?
-		if response.text == "" then
+		if response.Text == "" then
 			return nil
 		end
-		local check = moderatorFor(state, guard):check(response.text, guard.policy)
-		return if check.allowed then nil else moderationError(check, "output")
+		local check = moderatorFor(state, guard):Check(response.Text, guard.Policy)
+		return if check.Allowed then nil else moderationError(check, "output")
 	end
 end
 
-local function createResponse(state: ClientState, request: Request): Response
-	local provider = state.provider
-	local raw = postJson(state, provider.path, provider.buildBody(state.config, request, false))
-	return provider.parseResponse(raw)
+local function createResponse(state: ProviderState, request: Request): Response
+	local adapter = state.adapter
+	local raw = postJson(state, adapter.path, adapter.buildBody(state.config, request, false))
+	return adapter.parseResponse(state.config.format, raw)
 end
 
 -- Streams by making one regular request and replaying it, where the runtime cannot stream.
-local function fallbackStream(state: ClientState, request: Request, control: StreamControl)
+local function fallbackStream(state: ProviderState, request: Request, control: StreamControl)
 	Runtime.spawn(function()
 		local ok, result = pcall(createResponse, state, request)
 		if ok then
@@ -2830,11 +2873,11 @@ local function fallbackStream(state: ClientState, request: Request, control: Str
 	end)
 end
 
-local function openHttpStream(state: ClientState, request: Request, control: StreamControl)
+local function openHttpStream(state: ProviderState, request: Request, control: StreamControl)
 	local config = state.config
-	local provider = state.provider
-	local body = provider.buildBody(config, request, true)
-	local handle = provider.newStreamHandler()
+	local adapter = state.adapter
+	local body = adapter.buildBody(config, request, true)
+	local handle = adapter.newStreamHandler(config.format)
 	local sse = newSseParser(function(_eventName: string?, data: string)
 		if data == "[DONE]" or control.finished() then
 			return
@@ -2850,7 +2893,7 @@ local function openHttpStream(state: ClientState, request: Request, control: Str
 		end
 	end)
 	local httpRequest: HttpRequest = {
-		url = config.baseUrl .. provider.path,
+		url = config.baseUrl .. adapter.path,
 		method = "POST",
 		headers = requestHeaders(config, true),
 		body = encodeJson(body),
@@ -2874,7 +2917,7 @@ local function openHttpStream(state: ClientState, request: Request, control: Str
 		return
 	end
 	local failure = asError(close, "network")
-	if failure.kind == "unsupported" and config.streamFallback then
+	if failure.Kind == "unsupported" and config.streamFallback then
 		fallbackStream(state, request, control)
 	else
 		control.finish(failure)
@@ -2887,9 +2930,9 @@ local function websocketUrl(baseUrl: string): string
 end
 
 -- Opens a Responses WebSocket and routes server events to the request at the head of each lane.
-local function openSessionState(state: ClientState): SessionState
+local function openSessionState(state: ProviderState): SessionState
 	local config = state.config
-	local provider = state.provider
+	local adapter = state.adapter
 	type Pending = { control: StreamControl, handle: StreamHandler }
 	local lanes: { [string]: { Pending } } = {}
 	local closed = false
@@ -2946,7 +2989,7 @@ local function openSessionState(state: ClientState): SessionState
 				control.finish(newError("closed", "the WebSocket session is closed"))
 				return
 			end
-			local okBody, body = pcall(provider.buildBody, config, request, false)
+			local okBody, body = pcall(adapter.buildBody, config, request, false)
 			if not okBody then
 				control.finish(asError(body, "config"))
 				return
@@ -2954,16 +2997,16 @@ local function openSessionState(state: ClientState): SessionState
 			body.type = "response.create"
 			body.stream = nil
 			body.background = nil
-			if request.streamId then
-				body.stream_id = request.streamId
+			if request.StreamId then
+				body.stream_id = request.StreamId
 			end
-			local lane = request.streamId or DEFAULT_LANE
+			local lane = request.StreamId or DEFAULT_LANE
 			local queue = lanes[lane]
 			if queue == nil then
 				queue = {}
 				lanes[lane] = queue
 			end
-			table.insert(queue, { control = control, handle = provider.newStreamHandler() })
+			table.insert(queue, { control = control, handle = adapter.newStreamHandler(config.format) })
 			local okSend, sendError = pcall(function(): unknown
 				socket.send(encodeJson(body))
 				return nil
@@ -2983,16 +3026,16 @@ local function openSessionState(state: ClientState): SessionState
 	}
 end
 
-local function streamResponse(state: ClientState, request: Request, onEvent: ((event: StreamEvent) -> ())?): Stream
+local function streamResponse(state: ProviderState, request: Request, onEvent: ((event: StreamEvent) -> ())?): Stream
 	guardInput(state, request)
 	local config = state.config
 	local control = newStream(onEvent, outputGuard(state))
-	if config.provider == "openai" and config.transport == "websocket" then
+	if config.protocol == "openai" and config.transport == "websocket" then
 		Runtime.spawn(function()
 			local ok, session = pcall(openSessionState, state)
 			if not ok then
 				local failure = asError(session, "network")
-				if failure.kind == "unsupported" and config.streamFallback then
+				if failure.Kind == "unsupported" and config.streamFallback then
 					fallbackStream(state, request, control)
 				else
 					control.finish(failure)
@@ -3008,66 +3051,66 @@ local function streamResponse(state: ClientState, request: Request, onEvent: ((e
 	return control.stream
 end
 
-local function resolveConfig(config: ClientConfig): ResolvedConfig
+local function resolveConfig(config: ProviderConfig): ResolvedConfig
 	if type(config) ~= "table" then
-		error(newError("config", "AI.new expects a config table"))
+		error(newError("config", "Provider.new expects a config table"))
 	end
-	local provider: ProviderKind = config.provider
-	if PROVIDERS[provider] == nil then
-		error(newError("config", `unknown provider '{tostring(provider)}'; expected "anthropic" or "openai"`))
+	local format = config.Format
+	if format == nil or not knownFormats[format] then
+		error(newError("config", "`Format` must be one of the values in AI.Format, such as AI.Format.OpenAI.Responses"))
 	end
-	local baseUrl = string.gsub(config.baseUrl or DEFAULT_BASE_URLS[provider], "/+$", "")
-	local apiKey: ApiKey? = config.apiKey
+	local protocol: Protocol = format.Protocol
+	local baseUrl = string.gsub(config.BaseUrl or DEFAULT_BASE_URLS[protocol], "/+$", "")
+	local apiKey: ApiKey? = config.ApiKey
 	if apiKey == nil then
-		local secretName = config.secret or DEFAULT_SECRET_NAMES[provider]
+		local secretName = config.Secret or DEFAULT_SECRET_NAMES[protocol]
 		apiKey = Runtime.secret(secretName)
-		if apiKey == nil and config.secret ~= nil then
+		if apiKey == nil and config.Secret ~= nil then
 			local where = if Runtime.name == "roblox" then "in the secret store" else "in the environment"
 			error(newError("config", `secret '{secretName}' was not found {where}`))
 		end
 	end
-	if apiKey == nil and config.baseUrl == nil then
-		error(newError("config", `no API key for {provider}; set \`apiKey\` or \`secret\``))
+	if apiKey == nil and config.BaseUrl == nil then
+		error(newError("config", `no API key for {format.Name}; set \`ApiKey\` or \`Secret\``))
 	end
-	local transport: Transport = config.transport or "websocket"
+	local transport: Transport = config.Transport or "websocket"
 	if transport ~= "websocket" and transport ~= "sse" then
 		error(newError("config", `unknown transport '{tostring(transport)}'`))
 	end
 	return {
-		provider = provider,
+		format = format,
+		protocol = protocol,
 		baseUrl = baseUrl,
 		apiKey = apiKey,
-		headers = config.headers or {},
-		defaultModel = config.defaultModel,
-		maxTokens = config.maxTokens or 4096,
-		maxRetries = config.maxRetries or 2,
+		headers = config.Headers or {},
+		defaultModel = config.DefaultModel,
+		maxTokens = config.MaxTokens or 4096,
+		maxRetries = config.MaxRetries or 2,
 		transport = transport,
-		streamFallback = config.streamFallback ~= false,
-		connectTimeout = config.connectTimeout or 30,
-		anthropicVersion = config.anthropicVersion or "2023-06-01",
-		anthropicBeta = config.anthropicBeta,
-		organization = config.organization,
-		project = config.project,
-		moderation = config.moderation,
+		streamFallback = config.StreamFallback ~= false,
+		connectTimeout = config.ConnectTimeout or 30,
+		anthropicBeta = config.AnthropicBeta,
+		organization = config.Organization,
+		project = config.Project,
+		moderation = config.Moderation,
 	}
 end
 
-local function newSession(state: ClientState, sessionState: SessionState): Session
-	local session: Session
-	session = {
-		stream = function(_self: Session, request: Request, onEvent: ((event: StreamEvent) -> ())?): Stream
+local function newSession(state: ProviderState, sessionState: SessionState): Session
+	local session: Session = {
+		Stream = function(_self: Session, request: Request, onEvent: ((event: StreamEvent) -> ())?): Stream
 			guardInput(state, request)
 			local control = newStream(onEvent, outputGuard(state))
 			sessionState.submit(request, control)
 			return control.stream
 		end,
-		create = function(self: Session, request: Request): Response
-			return self:stream(request):await()
+		Create = function(self: Session, request: Request): Response
+			return self:Stream(request):Await()
 		end,
-		close = function(_self: Session)
+		Close = function(_self: Session)
 			sessionState.close()
 		end,
-		isOpen = function(_self: Session): boolean
+		IsOpen = function(_self: Session): boolean
 			return sessionState.isOpen()
 		end,
 	}
@@ -3084,34 +3127,44 @@ local function toolResultText(value: any): string
 	return if ok then encoded else tostring(value)
 end
 
+local Provider = {}
+
 --[=[
-	@within AI
-	Creates a client for one provider.
+	@within Provider
+	Creates a provider for one [Format].
 
 	```lua
 	-- Roblox: reads the "openai" key from the experience's secret store.
-	local openai = AI.new({ provider = "openai", secret = "openai", defaultModel = "gpt-5.2" })
+	local openai = AI.Provider.new({
+		Format = AI.Format.OpenAI.Responses,
+		Secret = "openai",
+		DefaultModel = "gpt-5.2",
+	})
 
 	-- Any OpenAI-compatible server with the Responses API, here a local one without a key.
-	local local_ = AI.new({ provider = "openai", baseUrl = "http://localhost:11434/v1", transport = "sse" })
+	local ollama = AI.Provider.new({
+		Format = AI.Format.OpenAI.Responses,
+		BaseUrl = "http://localhost:11434/v1",
+		Transport = "sse",
+	})
 	```
 
-	@param config ClientConfig
-	@return Client
+	@param config ProviderConfig
+	@return Provider
 	@error AIError -- `"config"` errors for invalid options or a missing key.
 ]=]
-function AI.new(config: ClientConfig): Client
+function Provider.new(config: ProviderConfig): Provider
 	local resolved = resolveConfig(config)
-	local state: ClientState = {
+	local state: ProviderState = {
 		config = resolved,
-		provider = PROVIDERS[resolved.provider],
-		client = nil,
+		adapter = ADAPTERS[resolved.protocol],
+		provider = nil,
 	}
 
-	local client: Client = {
-		provider = resolved.provider,
-		baseUrl = resolved.baseUrl,
-		create = function(_self: Client, request: Request): Response
+	local provider: Provider = {
+		Format = resolved.format,
+		BaseUrl = resolved.baseUrl,
+		Create = function(_self: Provider, request: Request): Response
 			guardInput(state, request)
 			local response = createResponse(state, request)
 			local guard = outputGuard(state)
@@ -3121,82 +3174,94 @@ function AI.new(config: ClientConfig): Client
 			end
 			return response
 		end,
-		stream = function(_self: Client, request: Request, onEvent: ((event: StreamEvent) -> ())?): Stream
+		Stream = function(_self: Provider, request: Request, onEvent: ((event: StreamEvent) -> ())?): Stream
 			return streamResponse(state, request, onEvent)
 		end,
-		connect = function(_self: Client): Session
-			if resolved.provider ~= "openai" then
-				error(newError("unsupported", "WebSocket sessions are only available for OpenAI clients"))
+		Connect = function(_self: Provider): Session
+			if resolved.protocol ~= "openai" then
+				error(newError("unsupported", "WebSocket sessions are only available for OpenAI formats"))
 			end
 			return newSession(state, openSessionState(state))
 		end,
-		run = function(
-			self: Client,
+		Run = function(
+			self: Provider,
 			request: Request,
 			handlers: { [string]: ToolHandler },
 			options: RunOptions?
 		): RunResult
-			local maxSteps = if options and options.maxSteps then options.maxSteps else 8
-			local onStep = if options then options.onStep else nil
+			local maxSteps = if options and options.MaxSteps then options.MaxSteps else 8
+			local onStep = if options then options.OnStep else nil
 			local messages = collectMessages(request)
 			local steps = 0
 			while true do
 				steps += 1
 				local step = table.clone(request)
-				step.prompt = nil
-				step.messages = messages
-				local response = self:create(step)
-				table.insert(messages, { role = "assistant", content = response.content })
+				step.Prompt = nil
+				step.Messages = messages
+				local response = self:Create(step)
+				table.insert(messages, { Role = "assistant", Content = response.Content })
 				if onStep then
 					onStep(response)
 				end
-				if #response.toolCalls == 0 or steps >= maxSteps then
-					return { response = response, messages = messages, steps = steps }
+				if #response.ToolCalls == 0 or steps >= maxSteps then
+					return { Response = response, Messages = messages, Steps = steps }
 				end
 				local results: { ContentPart } = {}
-				for _, call in response.toolCalls do
-					local handler = handlers[call.name]
+				for _, call in response.ToolCalls do
+					local handler = handlers[call.Name]
 					local ok, value
 					if handler then
-						ok, value = pcall(handler, call.arguments, call)
+						ok, value = pcall(handler, call.Arguments, call)
 					else
-						ok, value = false, `unknown tool '{call.name}'`
+						ok, value = false, `unknown tool '{call.Name}'`
 					end
 					table.insert(results, {
-						type = "tool_result",
-						toolCallId = call.id,
-						content = if ok then toolResultText(value) else tostring(value),
-						isError = if ok then nil else true,
+						Type = "tool_result",
+						ToolCallId = call.Id,
+						Content = if ok then toolResultText(value) else tostring(value),
+						IsError = if ok then nil else true,
 					})
 				end
-				table.insert(messages, { role = "user", content = results })
+				table.insert(messages, { Role = "user", Content = results })
 			end
 		end,
-		moderate = function(_self: Client, input: ModerationInput, options: ModerationOptions?): ModerationResponse
-			if resolved.provider ~= "openai" then
-				error(newError("unsupported", "moderation is only available for OpenAI clients"))
+		Moderate = function(_self: Provider, input: ModerationInput, options: ModerationOptions?): ModerationResponse
+			if resolved.protocol ~= "openai" then
+				error(newError("unsupported", "moderation is only available for OpenAI formats"))
 			end
 			local body = {
-				model = if options and options.model then options.model else "omni-moderation-latest",
+				model = if options and options.Model then options.Model else "omni-moderation-latest",
 				input = moderationInput(input),
 			}
 			return parseModeration(postJson(state, "/moderations", body))
 		end,
-		check = function(self: Client, input: ModerationInput, policy: ContentPolicy?): ContentCheck
-			local moderation = self:moderate(input, { model = if policy then policy.model else nil })
+		Check = function(self: Provider, input: ModerationInput, policy: ContentPolicy?): ContentCheck
+			local moderation = self:Moderate(input, { Model = if policy then policy.Model else nil })
 			return evaluatePolicy(moderation, policy)
 		end,
 	}
-	state.client = client
-	return client
+	state.provider = provider
+	return provider
 end
 
 --[=[
-	@method create
-	@within Client
+	@prop Format Format
+	@within Provider
+	@readonly
+]=]
+
+--[=[
+	@prop BaseUrl string
+	@within Provider
+	@readonly
+]=]
+
+--[=[
+	@method Create
+	@within Provider
 	@yields
 	Sends a request and waits for the complete response. Rate limits, overloads and network errors are retried
-	with exponential backoff, up to `maxRetries` times.
+	with exponential backoff, up to `MaxRetries` times.
 
 	@param request Request
 	@return Response
@@ -3204,21 +3269,21 @@ end
 ]=]
 
 --[=[
-	@method stream
-	@within Client
-	Starts streaming a response. OpenAI clients stream over WebSocket mode by default (one connection per call;
-	use [Client:connect] to reuse one), and Anthropic clients stream over server-sent events.
+	@method Stream
+	@within Provider
+	Starts streaming a response. OpenAI formats stream over WebSocket mode by default (one connection per call;
+	use [Provider:Connect] to reuse one), and Anthropic formats stream over server-sent events.
 
 	Where the runtime cannot stream, such as live Roblox servers (`CreateWebStreamClient` is Studio-only), the
-	response is fetched in one request and replayed as events, unless `streamFallback` is `false`.
+	response is fetched in one request and replayed as events, unless `StreamFallback` is `false`.
 
 	```lua
-	local stream = client:stream({ prompt = "Tell me a story." }, function(event)
-		if event.type == "text" then
-			label.Text ..= event.delta
+	local stream = provider:Stream({ Prompt = "Tell me a story." }, function(event)
+		if event.Type == "text" then
+			label.Text ..= event.Delta
 		end
 	end)
-	local response = stream:await()
+	local response = stream:Await()
 	```
 
 	@param request Request
@@ -3228,16 +3293,16 @@ end
 ]=]
 
 --[=[
-	@method connect
-	@within Client
+	@method Connect
+	@within Provider
 	@yields
-	Opens a persistent Responses WebSocket [Session]. OpenAI clients only.
+	Opens a persistent Responses WebSocket [Session]. OpenAI formats only.
 
 	```lua
-	local session = openai:connect()
-	local first = session:create({ prompt = "Pick a number.", store = false })
-	local second = session:create({ prompt = "Double it.", previousResponseId = first.id, store = false })
-	session:close()
+	local session = openai:Connect()
+	local first = session:Create({ Prompt = "Pick a number.", Store = false })
+	local second = session:Create({ Prompt = "Double it.", PreviousResponseId = first.Id, Store = false })
+	session:Close()
 	```
 
 	@return Session
@@ -3245,25 +3310,30 @@ end
 ]=]
 
 --[=[
-	@method run
-	@within Client
+	@method Run
+	@within Provider
 	@yields
 	Runs a tool-use loop: calls the model, executes requested tools with `handlers`, sends back the results, and
-	repeats until the model stops calling tools or `maxSteps` is reached.
+	repeats until the model stops calling tools or `MaxSteps` is reached.
 
 	```lua
-	local result = client:run({
-		prompt = "What's 2 ^ 10?",
-		tools = { { name = "pow", parameters = { type = "object", properties = { a = { type = "number" }, b = { type = "number" } } } } },
+	local result = provider:Run({
+		Prompt = "What's 2 ^ 10?",
+		Tools = {
+			{
+				Name = "pow",
+				Parameters = { type = "object", properties = { a = { type = "number" }, b = { type = "number" } } },
+			},
+		},
 	}, {
 		pow = function(args)
 			return args.a ^ args.b
 		end,
 	})
-	print(result.response.text)
+	print(result.Response.Text)
 	```
 
-	@param request Request -- Must include the `tools` the handlers implement.
+	@param request Request -- Must include the `Tools` the handlers implement.
 	@param handlers { [string]: ToolHandler }
 	@param options RunOptions?
 	@return RunResult
@@ -3271,10 +3341,10 @@ end
 ]=]
 
 --[=[
-	@method moderate
-	@within Client
+	@method Moderate
+	@within Provider
 	@yields
-	Classifies text and images with the OpenAI moderation API. OpenAI clients only.
+	Classifies text and images with the OpenAI moderation API. OpenAI formats only.
 
 	@param input ModerationInput
 	@param options ModerationOptions?
@@ -3283,15 +3353,15 @@ end
 ]=]
 
 --[=[
-	@method check
-	@within Client
+	@method Check
+	@within Provider
 	@yields
 	Moderates content and evaluates the result against a [ContentPolicy].
 
 	```lua
-	local check = openai:check(message, { thresholds = { harassment = 0.4 }, allow = { "violence" } })
-	if not check.allowed then
-		warn("blocked:", check.violations[1].category)
+	local check = openai:Check(message, { Thresholds = { harassment = 0.4 }, Allow = { "violence" } })
+	if not check.Allowed then
+		warn("blocked:", check.Violations[1].Category)
 	end
 	```
 
@@ -3302,21 +3372,21 @@ end
 ]=]
 
 --[=[
-	@prop text string
+	@prop Text string
 	@within Stream
 	@readonly
 	All text received so far.
 ]=]
 
 --[=[
-	@prop response Response?
+	@prop Response Response?
 	@within Stream
 	@readonly
 	The final response, once the stream is done.
 ]=]
 
 --[=[
-	@method next
+	@method Next
 	@within Stream
 	@yields
 	Waits for the next event. Returns `nil` once the stream has ended and every event has been read.
@@ -3325,7 +3395,7 @@ end
 ]=]
 
 --[=[
-	@method iter
+	@method Iter
 	@within Stream
 	Returns an iterator over the remaining events, for use in a generic `for` loop.
 
@@ -3333,7 +3403,7 @@ end
 ]=]
 
 --[=[
-	@method await
+	@method Await
 	@within Stream
 	@yields
 	Reads the remaining events and returns the final response.
@@ -3343,15 +3413,15 @@ end
 ]=]
 
 --[=[
-	@method cancel
+	@method Cancel
 	@within Stream
-	Stops the stream and releases its connection. Pending [Stream:await] calls raise a `"cancelled"` error.
+	Stops the stream and releases its connection. Pending [Stream:Await] calls raise a `"cancelled"` error.
 ]=]
 
 --[=[
-	@method stream
+	@method Stream
 	@within Session
-	Sends a `response.create` event over the session's connection. Requests with the same `streamId` run in
+	Sends a `response.create` event over the session's connection. Requests with the same `StreamId` run in
 	order; requests on different lanes run concurrently.
 
 	@param request Request
@@ -3360,10 +3430,10 @@ end
 ]=]
 
 --[=[
-	@method create
+	@method Create
 	@within Session
 	@yields
-	Like [Session:stream], but waits for the final response.
+	Like [Session:Stream], but waits for the final response.
 
 	@param request Request
 	@return Response
@@ -3371,16 +3441,50 @@ end
 ]=]
 
 --[=[
-	@method close
+	@method Close
 	@within Session
 	Closes the connection. In-flight streams end with a `"closed"` error.
 ]=]
 
 --[=[
-	@method isOpen
+	@method IsOpen
 	@within Session
 	@return boolean
 ]=]
+
+--------------------------------------------------------------------------------
+-- Public API
+--------------------------------------------------------------------------------
+
+--[=[
+	@prop Version string
+	@within AI
+	@readonly
+	The version of AI.luau.
+]=]
+AI.Version = "0.2.0"
+
+--[=[
+	@prop Format Formats
+	@within AI
+	@readonly
+	Every supported wire format, by provider and API version.
+
+	```lua
+	AI.Format.Anthropic.V2023_06_01 -- the same value as AI.Format.Anthropic["2023-06-01"]
+	AI.Format.Anthropic.Latest
+	AI.Format.OpenAI.Responses
+	```
+]=]
+AI.Format = FORMATS
+
+--[=[
+	@prop Provider { new: (config: ProviderConfig) -> Provider }
+	@within AI
+	@readonly
+	The [Provider] constructor table.
+]=]
+AI.Provider = table.freeze(Provider)
 
 --[=[
 	@within AI
@@ -3390,7 +3494,7 @@ end
 	@param policy ContentPolicy?
 	@return ContentCheck
 ]=]
-function AI.evaluate(moderation: ModerationResponse, policy: ContentPolicy?): ContentCheck
+function AI.Evaluate(moderation: ModerationResponse, policy: ContentPolicy?): ContentCheck
 	return evaluatePolicy(moderation, policy)
 end
 
@@ -3399,8 +3503,8 @@ end
 	Returns true if `value` is an [AIError].
 
 	```lua
-	local ok, err = pcall(client.create, client, request)
-	if not ok and AI.isError(err) and err.kind == "moderation" then
+	local ok, err = pcall(provider.Create, provider, request)
+	if not ok and AI.IsError(err) and err.Kind == "moderation" then
 		print("blocked")
 	end
 	```
@@ -3408,7 +3512,7 @@ end
 	@param value unknown
 	@return boolean
 ]=]
-function AI.isError(value: unknown): boolean
+function AI.IsError(value: unknown): boolean
 	return isError(value)
 end
 
@@ -3419,26 +3523,26 @@ end
 	@param value T
 	@return T
 ]=]
-function AI.object<T>(value: T): T
+function AI.Object<T>(value: T): T
 	return markObject(value)
 end
 
 --[=[
-	@prop null {}
+	@prop Null {}
 	@within AI
 	@readonly
-	A sentinel that encodes as JSON `null`, for `extra` fields that must be sent as null.
+	A sentinel that encodes as JSON `null`, for `Extra` fields that must be sent as null.
 ]=]
-AI.null = JSON_NULL
+AI.Null = JSON_NULL
 
 --[=[
 	@within AI
-	Encodes a value as JSON, honoring [AI.object] and [AI.null]. Keys are sorted.
+	Encodes a value as JSON, honoring [AI.Object] and [AI.Null]. Keys are sorted.
 
 	@param value any
 	@return string
 ]=]
-function AI.encodeJson(value: any): string
+function AI.EncodeJson(value: any): string
 	return encodeJson(value)
 end
 
@@ -3447,22 +3551,22 @@ end
 	@param content string | { ContentPart }
 	@return Message
 ]=]
-function AI.user(content: string | { ContentPart }): Message
-	return { role = "user", content = content }
+function AI.User(content: string | { ContentPart }): Message
+	return { Role = "user", Content = content }
 end
 
 --[=[
 	@within AI
-	Turns a response, or plain text, into an assistant message for the next turn.
+	Turns a response, or plain content, into an assistant message for the next turn.
 
 	@param content Response | string | { ContentPart }
 	@return Message
 ]=]
-function AI.assistant(content: Response | string | { ContentPart }): Message
-	if type(content) == "table" and (content :: any).content ~= nil and (content :: any).provider ~= nil then
-		return { role = "assistant", content = (content :: Response).content }
+function AI.Assistant(content: Response | string | { ContentPart }): Message
+	if type(content) == "table" and (content :: any).Format ~= nil and (content :: any).Content ~= nil then
+		return { Role = "assistant", Content = (content :: Response).Content }
 	end
-	return { role = "assistant", content = content :: string | { ContentPart } }
+	return { Role = "assistant", Content = content :: string | { ContentPart } }
 end
 
 --[=[
@@ -3470,8 +3574,8 @@ end
 	@param text string
 	@return Message
 ]=]
-function AI.system(text: string): Message
-	return { role = "system", content = text }
+function AI.System(text: string): Message
+	return { Role = "system", Content = text }
 end
 
 --[=[
@@ -3483,8 +3587,8 @@ end
 	@param isError boolean?
 	@return ToolResultPart
 ]=]
-function AI.toolResult(toolCallId: string, content: string, isError: boolean?): ToolResultPart
-	return { type = "tool_result", toolCallId = toolCallId, content = content, isError = isError }
+function AI.ToolResult(toolCallId: string, content: string, isError: boolean?): ToolResultPart
+	return { Type = "tool_result", ToolCallId = toolCallId, Content = content, IsError = isError }
 end
 
 --[=[
@@ -3494,8 +3598,8 @@ end
 	@param url string
 	@return ImagePart
 ]=]
-function AI.image(url: string): ImagePart
-	return { type = "image", url = url }
+function AI.Image(url: string): ImagePart
+	return { Type = "image", Url = url }
 end
 
 --[=[
@@ -3506,16 +3610,16 @@ end
 	@param mediaType string? -- Defaults to `"image/png"`.
 	@return ImagePart
 ]=]
-function AI.imageData(data: string, mediaType: string?): ImagePart
-	return { type = "image", data = data, mediaType = mediaType or "image/png" }
+function AI.ImageData(data: string, mediaType: string?): ImagePart
+	return { Type = "image", Data = data, MediaType = mediaType or "image/png" }
 end
 
 --[=[
-	@prop runtime "roblox" | "lune"
+	@prop Runtime "roblox" | "lune"
 	@within AI
 	@readonly
 	The runtime AI.luau detected.
 ]=]
-AI.runtime = Runtime.name
+AI.Runtime = Runtime.name
 
 return table.freeze(AI)
