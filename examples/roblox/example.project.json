@@ -1,0 +1,16 @@
+{
+	"name": "AI.luau example",
+	"tree": {
+		"$className": "DataModel",
+		"ReplicatedStorage": {
+			"AI": {
+				"$path": "../../AI.luau"
+			}
+		},
+		"ServerScriptService": {
+			"Chat": {
+				"$path": "Chat.server.luau"
+			}
+		}
+	}
+}
